@@ -21,8 +21,17 @@ const serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
 });
-
+import { ethers } from "ethers";
 const db = admin.firestore();
+const provider = new ethers.JsonRpcProvider(
+  process.env.RPC_URL
+);
+const signer = new ethers.Wallet(
+  process.env.SIGNER_PRIVATE_KEY,
+  provider
+);
+// เพิ่มชั่วคราว
+console.log("Signer address:", signer.address);
 
 // test route
 app.get("/", (req, res) => {
