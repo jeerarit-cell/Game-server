@@ -19,6 +19,38 @@ app.get("/", (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
+// ===== SAVE GAME =====
+app.post("/save", async (req, res) => {
+  const { userId, data } = req.body;
+
+  if (!userId || !data) {
+    return res.status(400).json({ error: "missing userId or data" });
+  }
+
+  await db.collection("users").doc(userId).set({
+    ...data,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp()
+  });
+
+  res.json({ success: true });
+});
+
+// ===== LOAD GAME =====
+app.post("/load", async (req, res) => {
+  const { userId } = req.body;
+
+  if (!userId) {
+    return res.status(400).json({ error: "missing userId" });
+  }
+
+  const doc = await db.collection("users").doc(userId).get();
+
+  if (!doc.exists) {
+    return res.json({ exists: false });
+  }
+
+  res.json({ exists: true, data: doc.data() });
+});
 app.listen(PORT, () => {
   console.log("Server started on port", PORT);
 });
