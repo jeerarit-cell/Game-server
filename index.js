@@ -1,8 +1,19 @@
 import express from "express";
 import admin from "firebase-admin";
 
+import cors from "cors";
+
 const app = express();
+
+// 🔥 ต้องมาก่อน routes
+app.use(cors({
+  origin: "*",
+  methods: ["GET", "POST", "OPTIONS"],
+  allowedHeaders: ["Content-Type"]
+}));
+
 app.use(express.json());
+app.options("*", cors());
 
 // 🔑 โหลด key จาก ENV
 const serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
