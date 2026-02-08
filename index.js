@@ -76,12 +76,7 @@ app.post("/load", async (req, res) => {
 
   res.json({ exists: true, data: doc.data() });
 });
-app.listen(PORT, () => {
-  console.log("Server started on port", PORT);
-});
-   app.post("/load", async (req, res) => {
-  ...
-});
+
 
 // 👇 วางตรงนี้
 app.post("/sell/prepare", async (req, res) => {
@@ -147,4 +142,7 @@ app.post("/sell/prepare", async (req, res) => {
     console.error(err);
     res.status(500).json({ ok: false });
   }
+});
+   app.listen(PORT, () => {
+  console.log("Server started on port", PORT);
 });
