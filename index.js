@@ -33,6 +33,11 @@ const signer = new ethers.Wallet(
 // เพิ่มชั่วคราว
 console.log("Signer address:", signer.address);
 
+// ==== helper ====
+function generateNonce() {
+  return Date.now() + Math.floor(Math.random() * 100000);
+}
+
 // test route
 app.get("/", (req, res) => {
   res.send("Game Server + Firestore connected");
@@ -73,4 +78,73 @@ app.post("/load", async (req, res) => {
 });
 app.listen(PORT, () => {
   console.log("Server started on port", PORT);
+});
+   app.post("/load", async (req, res) => {
+  ...
+});
+
+// 👇 วางตรงนี้
+app.post("/sell/prepare", async (req, res) => {
+  try {
+    const { userId, amountCoin, userWallet } = req.body;
+
+    if (!userId || !amountCoin || !userWallet) {
+      return res.status(400).json({ ok: false, message: "missing params" });
+    }
+
+    const userRef = db.collection("users").doc(userId);
+    const snap = await userRef.get();
+
+    if (!snap.exists) {
+      return res.json({ ok: false, message: "user not found" });
+    }
+
+    const user = snap.data();
+    if (user.coin < amountCoin) {
+      return res.json({ ok: false, message: "not enough coin" });
+    }
+
+    const COIN_PER_WLD = Number(process.env.SELL_RATE_COIN_PER_WLD);
+    const amountWLD = amountCoin / COIN_PER_WLD;
+
+    const nonce = generateNonce();
+
+    const amountWLDWei = ethers.parseUnits(amountWLD.toString(), 18);
+
+    const messageHash = ethers.solidityPackedKeccak256(
+      ["address", "uint256", "uint256", "address"],
+      [
+        userWallet,
+        amountWLDWei,
+        nonce,
+        process.env.CONTRACT_ADDRESS
+      ]
+    );
+
+    const signature = await signer.signMessage(
+      ethers.getBytes(messageHash)
+    );
+
+    await db.collection("sellOrders").doc(String(nonce)).set({
+      userId,
+      userWallet,
+      amountCoin,
+      amountWLD,
+      nonce,
+      status: "PREPARED",
+      createdAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    res.json({
+      ok: true,
+      amountWLD,
+      amountWLDWei: amountWLDWei.toString(),
+      nonce,
+      signature
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ ok: false });
+  }
 });
