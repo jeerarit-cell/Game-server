@@ -53,7 +53,7 @@ app.post("/save", async (req, res) => {
   }
 
   await db.collection("users").doc(userId).set({
-    ...data,
+    data,
     updatedAt: admin.firestore.FieldValue.serverTimestamp()
   });
 
