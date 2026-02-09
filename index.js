@@ -23,6 +23,135 @@ admin.initializeApp({
 });
 import { ethers } from "ethers";
 const db = admin.firestore();
+// ================================
+// LOAD + NORMALIZE SAVE (MASTER)
+// ================================
+app.post("/load", (req, res) => {
+    const { userId } = req.body;
+
+    if (!userId) {
+        return res.status(400).json({ error: "missing userId" });
+    }
+
+    console.log("[LOAD] userId =", userId);
+
+    let save = db.get(userId);
+
+    // -------------------------------
+    // NEW USER (NO SAVE)
+    // -------------------------------
+    if (!save) {
+        console.log("[LOAD] new user, create default save");
+
+        save = {
+            userId,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+
+            // progression
+            level: 1,
+            exp: 0,
+            gold: 0,
+
+            // HP / combat
+            maxHP: 20,
+            currentHP: 20,
+
+            // sudden death
+            suddenDeath: {
+                active: false,
+                baseMaxHP: 20
+            },
+
+            // battle
+            battle: {
+                inBattle: false,
+                enemyId: null,
+                turn: 0
+            },
+
+            // daily
+            daily: {
+                lastClaim: 0,
+                streak: 0
+            },
+
+            // flags
+            flags: {
+                forfeit: false,
+                locked: false
+            },
+
+            version: 1
+        };
+
+        db.set(userId, save);
+        return res.json(save);
+    }
+
+    // -------------------------------
+    // NORMALIZE EXISTING SAVE
+    // -------------------------------
+    console.log("[LOAD] existing save, normalize");
+
+    const normalized = {
+        // identity
+        userId,
+        createdAt: save.createdAt ?? Date.now(),
+        updatedAt: Date.now(),
+
+        // progression
+        level: Number.isInteger(save.level) ? save.level : 1,
+        exp: Number.isInteger(save.exp) ? save.exp : 0,
+        gold: Number.isInteger(save.gold) ? save.gold : 0,
+
+        // HP
+        maxHP: Number.isInteger(save.maxHP) ? save.maxHP : 20,
+        currentHP: Number.isInteger(save.currentHP)
+            ? Math.min(save.currentHP, save.maxHP ?? 20)
+            : (save.maxHP ?? 20),
+
+        // sudden death
+        suddenDeath: {
+            active: !!save.suddenDeath?.active,
+            baseMaxHP: Number.isInteger(save.suddenDeath?.baseMaxHP)
+                ? save.suddenDeath.baseMaxHP
+                : (save.maxHP ?? 20)
+        },
+
+        // battle
+        battle: {
+            inBattle: !!save.battle?.inBattle,
+            enemyId: save.battle?.enemyId ?? null,
+            turn: Number.isInteger(save.battle?.turn) ? save.battle.turn : 0
+        },
+
+        // daily
+        daily: {
+            lastClaim: Number.isInteger(save.daily?.lastClaim)
+                ? save.daily.lastClaim
+                : 0,
+            streak: Number.isInteger(save.daily?.streak)
+                ? save.daily.streak
+                : 0
+        },
+
+        // flags
+        flags: {
+            forfeit: !!save.flags?.forfeit,
+            locked: !!save.flags?.locked
+        },
+
+        version: 1
+    };
+
+    // overwrite normalized save
+    db.set(userId, normalized);
+
+    console.log("[LOAD] normalized save sent");
+
+    res.json(normalized);
+});
 const provider = new ethers.JsonRpcProvider(
   process.env.RPC_URL
 );
