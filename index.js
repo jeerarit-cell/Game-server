@@ -1,5 +1,5 @@
 // ========================================================
-// GAME SAVE SERVER (FINAL / DEBUG SAFE)
+// GAME SAVE SERVER (STABLE / FULL FLOW)
 // ========================================================
 
 const express = require("express");
@@ -35,6 +35,25 @@ function now() {
   return new Date().toISOString();
 }
 
+function defaultGameData(userId) {
+  return {
+    userId,
+    coin: 200,
+    level: 1,
+    exp: 0,
+    hp: 20,
+    maxHP: 20,
+    inBattle: false,
+    isSuddenDeath: false,
+    earnedToday: 0,
+    lastRewardDate: new Date().toDateString(),
+    dailyStamp: [],
+    stampStreak: 0,
+    createdAt: now(),
+    updatedAt: now()
+  };
+}
+
 // ---------------- ROUTES ----------------
 
 // Health
@@ -45,23 +64,26 @@ app.get("/", (req, res) => {
 // LOAD
 app.post("/load", (req, res) => {
   const { userId } = req.body;
-
   if (!userId) {
     return res.status(400).json({ ok: false, error: "NO_USER_ID" });
   }
 
   const users = readUsers();
 
+  if (!users[userId]) {
+    users[userId] = defaultGameData(userId);
+    writeUsers(users);
+  }
+
   res.json({
     ok: true,
-    data: users[userId] || null
+    data: users[userId]
   });
 });
 
 // SAVE
 app.post("/save", (req, res) => {
   const { userId, data } = req.body;
-
   if (!userId || !data) {
     return res.status(400).json({ ok: false, error: "BAD_REQUEST" });
   }
@@ -75,6 +97,21 @@ app.post("/save", (req, res) => {
   };
 
   writeUsers(users);
+  res.json({ ok: true });
+});
+
+// FORFEIT (กันหนี / disconnect)
+app.post("/forfeit", (req, res) => {
+  const { userId } = req.body;
+  if (!userId) return res.status(400).json({ ok: false });
+
+  const users = readUsers();
+  if (!users[userId]) return res.status(404).json({ ok: false });
+
+  users[userId].inBattle = false;
+  users[userId].updatedAt = now();
+  writeUsers(users);
+
   res.json({ ok: true });
 });
 
