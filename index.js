@@ -1,10 +1,14 @@
 // ========================================================
-// GAME SAVE SERVER (STABLE / FULL FLOW)
+// GAME SAVE SERVER (ES MODULE - RENDER SAFE)
 // ========================================================
 
-const express = require("express");
-const fs = require("fs");
-const path = require("path");
+import express from "express";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(express.json());
@@ -75,10 +79,7 @@ app.post("/load", (req, res) => {
     writeUsers(users);
   }
 
-  res.json({
-    ok: true,
-    data: users[userId]
-  });
+  res.json({ ok: true, data: users[userId] });
 });
 
 // SAVE
@@ -89,18 +90,13 @@ app.post("/save", (req, res) => {
   }
 
   const users = readUsers();
-
-  users[userId] = {
-    ...data,
-    userId,
-    updatedAt: now()
-  };
-
+  users[userId] = { ...data, userId, updatedAt: now() };
   writeUsers(users);
+
   res.json({ ok: true });
 });
 
-// FORFEIT (กันหนี / disconnect)
+// FORFEIT
 app.post("/forfeit", (req, res) => {
   const { userId } = req.body;
   if (!userId) return res.status(400).json({ ok: false });
