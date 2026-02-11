@@ -15,155 +15,127 @@ const VAULT_ADDRESS = process.env.CONTRACT_ADDRESS;
 const SELL_RATE = Number(process.env.SELL_RATE_COIN_PER_WLD) || 1100;
 
 // --- FIREBASE SETUP ---
-// เช็คว่ามี Key ไหม (ใช้ชื่อ FIREBASE_KEY ตามที่คุณบอก)
 if (!process.env.FIREBASE_KEY) {
     console.error("❌ ERROR: Missing FIREBASE_KEY in Render Environment");
     process.exit(1);
 }
 
 try {
-    // แปลง Text ใน Render กลับเป็น JSON เพื่อใช้งาน
     const serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
-    
     admin.initializeApp({
         credential: admin.credential.cert(serviceAccount)
     });
-    
     console.log("🔥 Firebase Connected!");
 } catch (error) {
-    console.error("❌ Firebase Init Error (Check JSON format):", error.message);
-    process.exit(1);
+    console.error("❌ Firebase Init Error:", error);
 }
 
-const db = admin.firestore();
+const db = admin.firestore(); // เรียกใช้ Database
 
 // --- BLOCKCHAIN SETUP ---
 const provider = new ethers.JsonRpcProvider(RPC_URL);
 const signer = new ethers.Wallet(PRIVATE_KEY, provider);
 
-// --- API ENDPOINTS ---
+// --- HELPER FUNCTION ---
+async function getUserBalance(wallet) {
+    const doc = await db.collection("users").doc(wallet).get();
+    if (!doc.exists) {
+        // ถ้าไม่มีข้อมูล ให้สร้างใหม่ (เริ่ม 0)
+        await db.collection("users").doc(wallet).set({ coin: 0, lastLogin: Date.now() });
+        return 0;
+    }
+    return doc.data().coin || 0;
+}
 
-/**
- * API: Login
- * - ถ้ามีข้อมูลเก่า: ดึง Coin ล่าสุดมา
- * - ถ้าเป็นคนใหม่: สร้างใหม่แล้วให้ 20 Coins
- */
+// --- API ---
+
+// API: Login (ใช้ดึงข้อมูลจาก Firebase)
 app.post("/api/login", async (req, res) => {
     try {
         const { address } = req.body;
         if (!address) return res.status(400).json({ success: false, message: "No address" });
 
-        // แปลงเป็นตัวพิมพ์เล็กเสมอ เพื่อกันข้อมูลซ้ำ (0xABC != 0xabc)
-        const wallet = address.toLowerCase();
+        const balance = await getUserBalance(address);
+        console.log(`👤 Login: ${address} | Balance: ${balance}`);
         
-        const userRef = db.collection("users").doc(wallet);
-        const doc = await userRef.get();
-
-        if (!doc.exists) {
-            // ✨ ผู้เล่นใหม่: ให้ 20 Coins
-            const newUserData = { 
-                coin: 20, 
-                highScore: 0, // แถมตัวแปรคะแนนสูงสุดให้ด้วย
-                lastLogin: admin.firestore.FieldValue.serverTimestamp()
-            };
-            await userRef.set(newUserData);
-            console.log(`👤 New User Created: ${wallet} | Given 20 Coins`);
-            return res.json({ success: true, balance: 20, highScore: 0 });
-        }
-
-        // ผู้เล่นเก่า
-        const data = doc.data();
-        console.log(`👤 Login: ${wallet} | Balance: ${data.coin}`);
-        res.json({ success: true, balance: data.coin || 0, highScore: data.highScore || 0 });
-
+        res.json({ success: true, balance: balance });
     } catch (e) {
         console.error("Login Error:", e);
         res.status(500).json({ success: false, message: e.message });
     }
 });
 
-/**
- * API: Save Game (บันทึกข้อมูลเกม)
- * - รับ Coin และ HighScore จากหน้าเว็บมาบันทึก
- */
-app.post("/api/save", async (req, res) => {
-    try {
-        const { wallet, coin, highScore } = req.body;
-        
-        if (!wallet) return res.status(400).json({ message: "No wallet" });
-
-        const userRef = db.collection("users").doc(wallet.toLowerCase());
-
-        // อัปเดตข้อมูลลง Firebase (ใช้ merge: true เพื่อไม่ให้ทับข้อมูลอื่นที่ไม่ได้ส่งมา)
-        await userRef.set({
-            coin: coin, 
-            highScore: highScore, // ถ้าเกมมีคะแนนสูงสุดก็บันทึกด้วย
-            lastUpdate: admin.firestore.FieldValue.serverTimestamp()
-        }, { merge: true });
-
-        console.log(`💾 Saved: ${wallet} | Coin: ${coin}`);
-        res.json({ success: true });
-
-    } catch (e) {
-        console.error("Save Error:", e);
-        res.status(500).json({ success: false, error: e.message });
-    }
-});
-
-/**
- * API: Withdraw (ถอนเงิน)
- * - เช็คยอดจาก Firebase -> ตัดยอด -> เซ็นอนุมัติ
- */
+// API: Withdraw (ตัดเงินใน Firebase)
 app.post("/api/withdraw", async (req, res) => {
     console.log("---- WITHDRAW REQUEST ----");
     try {
         const { wallet, amount, message, signature } = req.body;
 
-        if (!wallet || !amount) return res.status(400).json({ message: "Missing Data" });
+        if (!wallet || !amount || !message || !signature) {
+            return res.status(400).json({ success: false, message: "Missing Data" });
+        }
 
-        const userRef = db.collection("users").doc(wallet.toLowerCase());
+        // 1. ดึงยอดเงินล่าสุดจาก Firebase (Real-time)
+        const userRef = db.collection("users").doc(wallet);
+        const doc = await userRef.get();
         
-        // ใช้ Transaction เพื่อความชัวร์ (ป้องกันยอดเงินเพี้ยนตอนคนกดรัวๆ)
-        const result = await db.runTransaction(async (t) => {
-            const doc = await t.get(userRef);
-            if (!doc.exists) throw "User not found";
+        if (!doc.exists) {
+            return res.status(404).json({ success: false, message: "User not found" });
+        }
 
-            const currentCoin = doc.data().coin || 0;
-            if (currentCoin < amount) throw "Coin ไม่พอ";
+        const currentCoin = doc.data().coin || 0;
 
-            // คำนวณยอด
-            const amountWei = (BigInt(amount) * BigInt(10n ** 18n)) / BigInt(SELL_RATE);
-            const nonce = Date.now();
+        // 2. เช็คยอดเงิน
+        if (currentCoin < amount) {
+            return res.status(400).json({ success: false, message: "Coin ไม่พอ!" });
+        }
 
-            // สร้างลายเซ็น
-            const packedData = ethers.solidityPackedKeccak256(
-                ["address", "uint256", "uint256", "address"],
-                [wallet, amountWei, nonce, VAULT_ADDRESS]
-            );
-            const vaultSignature = await signer.signMessage(ethers.getBytes(packedData));
+        // 3. คำนวณ WLD
+        const amountWei = (BigInt(amount) * BigInt(10n ** 18n)) / BigInt(SELL_RATE);
+        const nonce = Date.now();
 
-            // ตัดเงินใน Database
-            t.update(userRef, { 
-                coin: admin.firestore.FieldValue.increment(-amount) 
-            });
+        // 4. Server เซ็นอนุมัติ (Sign)
+        const packedData = ethers.solidityPackedKeccak256(
+            ["address", "uint256", "uint256", "address"],
+            [wallet, amountWei, nonce, VAULT_ADDRESS]
+        );
+        const vaultSignature = await signer.signMessage(ethers.getBytes(packedData));
 
-            return {
-                claimData: {
-                    user: wallet,
-                    amount: amountWei.toString(),
-                    nonce: nonce,
-                    signature: vaultSignature,
-                    vaultAddress: VAULT_ADDRESS
-                },
-                newBalance: currentCoin - amount
-            };
+        // 5. ตัดยอดเงินใน Firebase ทันที! (ใช้ update)
+        await userRef.update({
+            coin: admin.firestore.FieldValue.increment(-amount) // ลบยอดออกแบบ Atomic (ปลอดภัยมาก)
         });
 
-        res.json({ success: true, ...result });
+        console.log(`✅ Approved & Deducted: ${wallet} - ${amount} Coins`);
+
+        res.json({
+            success: true,
+            claimData: {
+                user: wallet,
+                amount: amountWei.toString(),
+                nonce: nonce,
+                signature: vaultSignature,
+                vaultAddress: VAULT_ADDRESS
+            },
+            newBalance: currentCoin - amount
+        });
 
     } catch (e) {
         console.error("Withdraw Error:", e);
-        res.status(500).json({ success: false, message: e.message || e });
+        res.status(500).json({ success: false, message: e.message });
+    }
+});
+
+// API: Save Game (เอาไว้ให้ Frontend ยิงมาอัปเดตยอดตอนเล่นได้)
+app.post("/api/save", async (req, res) => {
+    try {
+        const { wallet, coin } = req.body;
+        // ในความเป็นจริง ควรมีการเช็ค Security ตรงนี้ด้วยว่าไม่ได้โกง
+        // แต่เบื้องต้นให้บันทึกลง Firebase ได้เลย
+        await db.collection("users").doc(wallet).update({ coin: coin });
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
     }
 });
 
