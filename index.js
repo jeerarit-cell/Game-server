@@ -1,117 +1,56 @@
-// ========================================================
-// GAME SAVE SERVER (ES MODULE - RENDER SAFE)
-// ========================================================
-
-import express from "express";
-import fs from "fs";
-import path from "path";
-import { fileURLToPath } from "url";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const express = require("express");
+const cors = require("cors");
+const { ethers } = require("ethers");
 
 const app = express();
+app.use(cors());
 app.use(express.json());
 
-// ---------------- CONFIG ----------------
-const PORT = process.env.PORT || 3000;
-const DATA_DIR = path.join(__dirname, "data");
-const USER_FILE = path.join(DATA_DIR, "users.json");
+/*
+  ตอนนี้ใช้ memory store ไปก่อน
+  เดี๋ยวค่อยเปลี่ยนเป็น Firebase
+*/
+let users = {
+  "0xUserWalletHere": {
+    coin: 1000
+  }
+};
 
-// ---------------- INIT ----------------
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
-if (!fs.existsSync(USER_FILE)) fs.writeFileSync(USER_FILE, "{}");
+function verifySignature(message, signature, wallet) {
+  const recovered = ethers.verifyMessage(message, signature);
+  return recovered.toLowerCase() === wallet.toLowerCase();
+}
 
-// ---------------- HELPERS ----------------
-function readUsers() {
+app.post("/api/withdraw", async (req, res) => {
   try {
-    return JSON.parse(fs.readFileSync(USER_FILE, "utf8"));
-  } catch {
-    return {};
+    const { wallet, amount, message, signature } = req.body;
+
+    if (!wallet || !amount || !signature)
+      return res.status(400).json({ message: "Missing data" });
+
+    if (!verifySignature(message, signature, wallet))
+      return res.status(400).json({ message: "Invalid signature" });
+
+    const user = users[wallet];
+    if (!user)
+      return res.status(400).json({ message: "User not found" });
+
+    if (user.coin < amount)
+      return res.status(400).json({ message: "Not enough coin" });
+
+    // 🔥 หัก coin ที่ server
+    user.coin -= amount;
+
+    return res.json({
+      success: true,
+      newBalance: user.coin
+    });
+
+  } catch (e) {
+    return res.status(400).json({ message: e.message });
   }
-}
-
-function writeUsers(data) {
-  fs.writeFileSync(USER_FILE, JSON.stringify(data, null, 2));
-}
-
-function now() {
-  return new Date().toISOString();
-}
-
-function defaultGameData(userId) {
-  return {
-    userId,
-    coin: 200,
-    level: 1,
-    exp: 0,
-    hp: 20,
-    maxHP: 20,
-    inBattle: false,
-    isSuddenDeath: false,
-    earnedToday: 0,
-    lastRewardDate: new Date().toDateString(),
-    dailyStamp: [],
-    stampStreak: 0,
-    createdAt: now(),
-    updatedAt: now()
-  };
-}
-
-// ---------------- ROUTES ----------------
-
-// Health
-app.get("/", (req, res) => {
-  res.send("SERVER OK");
 });
 
-// LOAD
-app.post("/load", (req, res) => {
-  const { userId } = req.body;
-  if (!userId) {
-    return res.status(400).json({ ok: false, error: "NO_USER_ID" });
-  }
-
-  const users = readUsers();
-
-  if (!users[userId]) {
-    users[userId] = defaultGameData(userId);
-    writeUsers(users);
-  }
-
-  res.json({ ok: true, data: users[userId] });
-});
-
-// SAVE
-app.post("/save", (req, res) => {
-  const { userId, data } = req.body;
-  if (!userId || !data) {
-    return res.status(400).json({ ok: false, error: "BAD_REQUEST" });
-  }
-
-  const users = readUsers();
-  users[userId] = { ...data, userId, updatedAt: now() };
-  writeUsers(users);
-
-  res.json({ ok: true });
-});
-
-// FORFEIT
-app.post("/forfeit", (req, res) => {
-  const { userId } = req.body;
-  if (!userId) return res.status(400).json({ ok: false });
-
-  const users = readUsers();
-  if (!users[userId]) return res.status(404).json({ ok: false });
-
-  users[userId].inBattle = false;
-  users[userId].updatedAt = now();
-  writeUsers(users);
-
-  res.json({ ok: true });
-});
-
-// ---------------- START ----------------
-app.listen(PORT, () => {
-  console.log("Server running on port", PORT);
+app.listen(3000, () => {
+  console.log("Server running on port 3000");
 });
