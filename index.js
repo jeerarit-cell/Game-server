@@ -6,14 +6,9 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-/*
-  ตอนนี้ใช้ memory store ไปก่อน
-  เดี๋ยวค่อยเปลี่ยนเป็น Firebase
-*/
+// ทดสอบก่อน ใช้ memory
 let users = {
-  "0xUserWalletHere": {
-    coin: 1000
-  }
+  "0xPUT_REAL_WALLET_HERE": { coin: 1000 }
 };
 
 function verifySignature(message, signature, wallet) {
@@ -25,32 +20,31 @@ app.post("/api/withdraw", async (req, res) => {
   try {
     const { wallet, amount, message, signature } = req.body;
 
-    if (!wallet || !amount || !signature)
+    if (!wallet || !amount || !message || !signature)
       return res.status(400).json({ message: "Missing data" });
 
     if (!verifySignature(message, signature, wallet))
       return res.status(400).json({ message: "Invalid signature" });
 
     const user = users[wallet];
-    if (!user)
-      return res.status(400).json({ message: "User not found" });
-
+    if (!user) return res.status(400).json({ message: "User not found" });
     if (user.coin < amount)
       return res.status(400).json({ message: "Not enough coin" });
 
-    // 🔥 หัก coin ที่ server
     user.coin -= amount;
 
-    return res.json({
+    res.json({
       success: true,
       newBalance: user.coin
     });
 
   } catch (e) {
-    return res.status(400).json({ message: e.message });
+    res.status(400).json({ message: e.message });
   }
 });
 
-app.listen(3000, () => {
-  console.log("Server running on port 3000");
+// ❗ Render ใช้ process.env.PORT
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log("Server running on port", PORT);
 });
