@@ -9,15 +9,10 @@ app.use(cors({ origin: "*" }));
 app.use(express.json());
 
 // ================= CONFIG =================
-const RPC_URL =
-  process.env.RPC_URL ||
-  "https://worldchain-mainnet.g.alchemy.com/public";
-
-const PRIVATE_KEY = process.env.SIGNER_PRIVATE_KEY;
-const VAULT_ADDRESS = process.env.CONTRACT_ADDRESS;
-
-const SELL_RATE =
-  Number(process.env.SELL_RATE_COIN_PER_WLD) || 1100;
+const RPC_URL = process.env.RPC_URL || "https://worldchain-mainnet.g.alchemy.com/public";
+const PRIVATE_KEY = process.env.SIGNER_PRIVATE_KEY; // คีย์ของกระเป๋า Server ที่ใช้เซ็นอนุมัติ
+const VAULT_ADDRESS = process.env.CONTRACT_ADDRESS; // ที่อยู่ Smart Contract
+const SELL_RATE = Number(process.env.SELL_RATE_COIN_PER_WLD) || 1100;
 
 if (!PRIVATE_KEY || !VAULT_ADDRESS) {
   console.error("❌ MISSING CONFIG: Check Private Key or Contract Address");
@@ -27,83 +22,64 @@ if (!PRIVATE_KEY || !VAULT_ADDRESS) {
 const provider = new ethers.JsonRpcProvider(RPC_URL);
 const signer = new ethers.Wallet(PRIVATE_KEY, provider);
 
-// ================= DEV MEMORY DB =================
-// ⚠ ใช้สำหรับ DEV เท่านั้น (รีสตาร์ทแล้วข้อมูลหาย)
-let users = {};
-
-// ================= LOGIN =================
-app.post("/api/login", (req, res) => {
-  const { address } = req.body;
-
-  if (!address) {
-    return res.status(400).json({
-      success: false,
-      message: "No address"
-    });
-  }
-
-  if (!users[address]) {
-    users[address] = {
-      coin: 5000,
-      lastLogin: Date.now()
-    };
-  }
-
-  res.json({
-    success: true,
-    balance: users[address].coin
-  });
-});
-
-// ================= WITHDRAW =================
+// ================= WITHDRAW API =================
 app.post("/api/withdraw", async (req, res) => {
   console.log("---- WITHDRAW REQUEST ----");
-  console.log("BODY:", req.body);
-
+  
   try {
-    const { wallet, amount } = req.body;
+    // 1. รับค่า currentCoin มาด้วย
+    const { wallet, amount, currentCoin } = req.body;
 
     if (!wallet || amount == null) {
+      return res.status(400).json({ success: false, message: "Missing wallet or amount" });
+    }
+
+    console.log(`User: ${wallet} | Client Coin: ${currentCoin} | Withdraw: ${amount}`);
+
+    // 2. LOGIC ใหม่: ใช้ยอดเงินจาก Client เป็นหลัก (Trust Client)
+    // เพื่อแก้ปัญหา Server รีเซ็ตแล้วเงินเด้งกลับมา 5000
+    let userBalance = Number(currentCoin);
+
+    // ป้องกันกรณี Client ส่งมาเป็น null/undefined
+    if (isNaN(userBalance)) {
+        userBalance = 0; 
+    }
+
+    // 3. ตรวจสอบยอดเงิน
+    if (userBalance < amount) {
       return res.status(400).json({
         success: false,
-        message: "Missing wallet or amount"
+        message: "ยอดเงินไม่พอทำรายการ"
       });
     }
 
-    if (!users[wallet]) {
-      users[wallet] = { coin: 5000 };
-    }
+    // 4. หักเหรียญ
+    let newBalance = userBalance - amount;
 
-    const user = users[wallet];
+    // ==========================================
+    // PREPARE SMART CONTRACT DATA
+    // ==========================================
+    
+    // แปลงจำนวนเงินเป็น Wei (18 decimals) โดยหารด้วย Rate
+    const amountWei = (BigInt(amount) * 10n ** 18n) / BigInt(SELL_RATE);
+    
+    const nonce = Date.now(); // ใช้เวลาปัจจุบันเป็น Nonce ป้องกันการใช้ซ้ำ
 
-    if (user.coin < amount) {
-      return res.status(400).json({
-        success: false,
-        message: "Insufficient Coins"
-      });
-    }
-
-    // ===== คำนวณ WLD (18 decimals) =====
-    const amountWei =
-      (BigInt(amount) * 10n ** 18n) / BigInt(SELL_RATE);
-
-    const nonce = Date.now();
-
-    // ===== Server Sign (Vault Signature) =====
+    // Pack ข้อมูลตาม Format ของ Solidity
+    // ต้องเรียงลำดับให้ตรงกับใน Smart Contract: (address, uint256, uint256, address)
     const packedData = ethers.solidityPackedKeccak256(
       ["address", "uint256", "uint256", "address"],
       [wallet, amountWei, nonce, VAULT_ADDRESS]
     );
 
-    console.log("⏳ Signing Vault...");
-    const vaultSignature = await signer.signMessage(
-      ethers.getBytes(packedData)
-    );
-    console.log("✅ Signed");
+    console.log("⏳ Signing Vault Approval...");
+    
+    // Server เซ็นลายเซ็นอนุมัติ
+    const vaultSignature = await signer.signMessage(ethers.getBytes(packedData));
+    
+    console.log("✅ Signed Success");
 
-    // ===== หักเหรียญ =====
-    user.coin -= amount;
-
+    // 5. ส่งข้อมูลกลับไปให้ Client
     res.json({
       success: true,
       claimData: {
@@ -112,14 +88,14 @@ app.post("/api/withdraw", async (req, res) => {
         signature: vaultSignature,
         vaultAddress: VAULT_ADDRESS
       },
-      newBalance: user.coin
+      newBalance: newBalance // ส่งยอดเงินที่หักแล้วกลับไป
     });
 
   } catch (error) {
     console.error("Server Error:", error);
     res.status(500).json({
       success: false,
-      message: error.message
+      message: "Internal Server Error: " + error.message
     });
   }
 });
