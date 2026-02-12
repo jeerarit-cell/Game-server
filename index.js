@@ -80,7 +80,7 @@ app.post("/api/withdraw", async (req, res) => {
         }
 
         // คำนวณ WLD
-        const amountWei = (BigInt(amount) * BigInt(10n ** 18n)) / BigInt(SELL_RATE);
+        const amountWei = (BigInt(amount) * 10n ** 18n) / BigInt(SELL_RATE);
         const nonce = Date.now();
 
         // 2. Server เซ็นอนุมัติ (Vault Signature)
