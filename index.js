@@ -198,9 +198,11 @@ app.post("/api/battle-result", async (req, res) => {
       
       const entryFee = maxHp; // ค่าเข้าคือ Max HP
 
+            // =======================================
+      // 🏆 คำนวณผลลัพธ์แบบ สุทธิ (Net Change)
       // =======================================
-      // 🏆 คำนวณผลลัพธ์ตามที่หน้าบ้านส่งมา
-      // =======================================
+      const entryFee = maxHp; // ค่าเข้าคือ Max HP
+
       if (result === "win") {
         // --- กรณีชนะ ---
         let baseReward = (playerHpPercent >= 0.5) ? monster.hp : Math.floor(monster.hp / 2);
@@ -210,10 +212,11 @@ app.post("/api/battle-result", async (req, res) => {
           baseReward = Math.max(0, DAILY_GAME_LIMIT - earnedToday);
         }
 
-        rewardCoin = baseReward + entryFee; // กำไร + คืนทุน
+        rewardCoin = baseReward + entryFee; // ยอดรวมที่ส่งไปโชว์หน้าบ้าน (กำไร + ทุน)
         rewardExp = expReward[monster.type] || 1;
 
-        currentCoin += rewardCoin;
+        // 🌟 เซิร์ฟเวอร์ไม่ได้หักค่าเข้าตอนแรก ดังนั้นบวกแค่ "กำไรสุทธิ" 🌟
+        currentCoin += baseReward;
         currentExp += rewardExp;
         earnedToday += baseReward;
 
@@ -226,12 +229,14 @@ app.post("/api/battle-result", async (req, res) => {
 
       } else if (result === "lose") {
         // --- กรณีแพ้ ---
-        // สมมติหน้าบ้านคำนวณมาให้ว่าควรได้คืนไหม (เพื่อความง่าย เราให้ Server คืนครึ่งนึงเสมอถ้าแพ้)
+        // 🌟 เซิร์ฟเวอร์ไม่ได้หักค่าเข้าตอนแรก ดังนั้นต้องลบ "ค่าเข้าส่วนที่ไม่ได้คืน" ออก 🌟
         feeRefund = Math.floor(entryFee / 2);
-        currentCoin += feeRefund;
+        const netLoss = entryFee - feeRefund; 
+        currentCoin -= netLoss; 
+        
       } else if (result === "draw") {
-        // --- กรณีเสมอ --- (ไม่ได้ไม่เสีย ให้สู้ใหม่รอบหน้า)
-        // หักค่าเข้าไปแล้วก่อนหน้านี้ เสมอไม่มีเงินคืน
+        // --- กรณีเสมอ --- 
+        // หน้าบ้านจะจัดการให้สู้ใหม่รอบหน้า (Double KO) Server ไม่ต้องหักเงิน
       }
 
       // =======================================
