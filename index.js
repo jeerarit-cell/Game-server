@@ -57,6 +57,29 @@ const monsterDB = [
 ];
 
 // ==========================================
+// API 0: GET PLAYER (ดึงข้อมูลตอนล็อกอิน)
+// ==========================================
+app.post("/api/get-player", async (req, res) => {
+  try {
+    const { userId } = req.body;
+    if (!userId) return res.status(400).json({ success: false, message: "Missing userId" });
+
+    const userRef = db.collection("users").doc(userId);
+    const doc = await userRef.get();
+
+    if (!doc.exists) {
+      // ไม่พบผู้เล่น (ต้องไปหน้าตั้งชื่อ)
+      return res.json({ success: false, message: "USER_NOT_FOUND" });
+    }
+
+    res.json({ success: true, data: doc.data() });
+  } catch (error) {
+    console.error("Get Player Error:", error);
+    res.status(500).json({ success: false, message: "Server Error" });
+  }
+});
+
+// ==========================================
 // API 1: REGISTER (สร้างตัวละคร & แจกเงินเริ่มต้น)
 // ==========================================
 app.post("/api/register", async (req, res) => {
@@ -88,6 +111,39 @@ app.post("/api/register", async (req, res) => {
   } catch (error) {
     console.error("Register Error:", error);
     res.status(400).json({ success: false, message: error.message === "USER_ALREADY_REGISTERED" ? "ไอดีนี้ลงทะเบียนไปแล้ว" : "เกิดข้อผิดพลาด" });
+  }
+});
+
+// ==========================================
+// API 1.5: BUY COINS (เพิ่มเหรียญหลังจ่าย WLD สำเร็จ)
+// ==========================================
+app.post("/api/buy-coins", async (req, res) => {
+  try {
+    const { userId, amountBought, reference } = req.body;
+    if (!userId || !amountBought) return res.status(400).json({ success: false, message: "ข้อมูลไม่ครบถ้วน" });
+
+    const userRef = db.collection("users").doc(userId);
+
+    const newBalance = await db.runTransaction(async (t) => {
+      const doc = await t.get(userRef);
+      if (!doc.exists) throw new Error("USER_NOT_FOUND");
+
+      let currentCoin = Number(doc.data().coin) || 0;
+      currentCoin += Number(amountBought);
+
+      // บันทึกยอดใหม่ลง DB
+      t.update(userRef, { coin: currentCoin });
+
+      // TODO: ในอนาคตสามารถทำระบบบันทึก reference (ใบเสร็จ) ลง DB เพื่อป้องกันการเติมเงินซ้ำได้
+
+      return currentCoin;
+    });
+
+    console.log(`✅ [Buy Success] User: ${userId} | Bought: ${amountBought} | New Balance: ${newBalance}`);
+    res.json({ success: true, newBalance: newBalance });
+  } catch (error) {
+    console.error("Buy Coins Error:", error);
+    res.status(400).json({ success: false, message: "เกิดข้อผิดพลาดในการอัปเดตเหรียญ" });
   }
 });
 
@@ -233,13 +289,14 @@ app.post("/api/battle-result", async (req, res) => {
 app.post("/api/withdraw", async (req, res) => {
   console.log("---- SECURE WITHDRAW REQUEST ----");
   try {
-    const { userId, wallet, amount } = req.body;
-    if (!userId || !wallet || !amount) return res.status(400).json({ success: false, message: "ข้อมูลไม่ครบถ้วน" });
+    const { userId, amount } = req.body;
+    if (!userId || !amount) return res.status(400).json({ success: false, message: "ข้อมูลไม่ครบถ้วน" });
 
     const requestAmount = Number(amount);
     if (requestAmount <= 0) return res.status(400).json({ success: false, message: "จำนวนเงินไม่ถูกต้อง" });
 
     const userRef = db.collection("users").doc(userId);
+    let userWallet = ""; // เอาไว้เก็บกระเป๋าจาก Database
     
     // หักเงินใน Database แบบ Transaction
     const newBalance = await db.runTransaction(async (t) => {
@@ -247,9 +304,9 @@ app.post("/api/withdraw", async (req, res) => {
       if (!doc.exists) throw new Error("USER_NOT_FOUND");
 
       const userData = doc.data();
-      if (!userData.walletAddress || userData.walletAddress.toLowerCase() !== wallet.toLowerCase()) {
-        throw new Error("WALLET_MISMATCH");
-      }
+      userWallet = userData.walletAddress; // ดึงกระเป๋าจากฐานข้อมูลโดยตรง
+      
+      if (!userWallet) throw new Error("WALLET_NOT_FOUND");
 
       const realBalance = Number(userData.coin) || 0;
       if (realBalance < requestAmount) throw new Error("INSUFFICIENT_FUNDS");
@@ -268,7 +325,7 @@ app.post("/api/withdraw", async (req, res) => {
     // Ethers V6 Syntax (solidityPackedKeccak256 & getBytes)
     const packedData = ethers.solidityPackedKeccak256(
       ["address", "uint256", "uint256", "address"],
-      [wallet, amountWei, nonce, VAULT_ADDRESS]
+      [userWallet, amountWei, nonce, VAULT_ADDRESS]
     );
     const vaultSignature = await signer.signMessage(ethers.getBytes(packedData));
 
@@ -281,7 +338,7 @@ app.post("/api/withdraw", async (req, res) => {
     console.error("❌ Withdraw Error:", error.message || error);
     let clientMessage = "เกิดข้อผิดพลาดที่เซิร์ฟเวอร์";
     if (error.message === "USER_NOT_FOUND") clientMessage = "ไม่พบข้อมูลผู้เล่น";
-    else if (error.message === "WALLET_MISMATCH") clientMessage = "กระเป๋าไม่ตรงกับที่ลงทะเบียน";
+    else if (error.message === "WALLET_NOT_FOUND") clientMessage = "ไม่พบกระเป๋าที่ผูกไว้";
     else if (error.message === "INSUFFICIENT_FUNDS") clientMessage = "ยอด Coin ไม่เพียงพอ";
     res.status(400).json({ success: false, message: clientMessage });
   }
