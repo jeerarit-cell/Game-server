@@ -284,7 +284,7 @@ app.post("/api/battle-result", async (req, res) => {
 });
 
 // ==========================================
-// API 4: WITHDRAW (ระบบถอนเงิน & ลายเซ็น Smart Contract)
+// API 4: WITHDRAW (ตรวจสอบยอด & สร้างลายเซ็น - ยังไม่หักเงิน)
 // ==========================================
 app.post("/api/withdraw", async (req, res) => {
   console.log("---- SECURE WITHDRAW REQUEST ----");
@@ -296,46 +296,34 @@ app.post("/api/withdraw", async (req, res) => {
     if (requestAmount <= 0) return res.status(400).json({ success: false, message: "จำนวนเงินไม่ถูกต้อง" });
 
     const userRef = db.collection("users").doc(userId);
-    let userWallet = ""; // เอาไว้เก็บกระเป๋าจาก Database
+    const doc = await userRef.get(); // แค่ดึงข้อมูลมาดูเฉยๆ ไม่ใช้ Transaction หักเงิน
     
-    // หักเงินใน Database แบบ Transaction
-    const newBalance = await db.runTransaction(async (t) => {
-      const doc = await t.get(userRef);
-      if (!doc.exists) throw new Error("USER_NOT_FOUND");
+    if (!doc.exists) throw new Error("USER_NOT_FOUND");
+    
+    const userData = doc.data();
+    const userWallet = userData.walletAddress;
+    const currentBalance = Number(userData.coin) || 0;
 
-      const userData = doc.data();
-      userWallet = userData.walletAddress; // ดึงกระเป๋าจากฐานข้อมูลโดยตรง
-      
-      if (!userWallet) throw new Error("WALLET_NOT_FOUND");
-
-      const realBalance = Number(userData.coin) || 0;
-      if (realBalance < requestAmount) throw new Error("INSUFFICIENT_FUNDS");
-
-      const updatedBalance = realBalance - requestAmount;
-      t.update(userRef, { coin: updatedBalance, lastWithdrawal: new Date().toISOString() });
-      return updatedBalance; 
-    });
-
-    console.log(`✅ [DB Deducted] User: ${userId} | Remained: ${newBalance} Coins`);
+    if (!userWallet) throw new Error("WALLET_NOT_FOUND");
+    if (currentBalance < requestAmount) throw new Error("INSUFFICIENT_FUNDS");
 
     // สร้าง Signature สำหรับ Smart Contract
     const amountWei = (BigInt(requestAmount) * 10n ** 18n) / BigInt(SELL_RATE);
     const nonce = Date.now(); 
     
-    // Ethers V6 Syntax (solidityPackedKeccak256 & getBytes)
     const packedData = ethers.solidityPackedKeccak256(
       ["address", "uint256", "uint256", "address"],
       [userWallet, amountWei, nonce, VAULT_ADDRESS]
     );
     const vaultSignature = await signer.signMessage(ethers.getBytes(packedData));
 
+    // ส่งกลับไปให้หน้าเว็บ แต่ "ยังไม่หักเงิน"
     res.json({
       success: true,
-      newBalance: newBalance,
       claimData: { amount: amountWei.toString(), nonce: nonce, signature: vaultSignature, vaultAddress: VAULT_ADDRESS }
     });
   } catch (error) {
-    console.error("❌ Withdraw Error:", error.message || error);
+    console.error("❌ Withdraw Request Error:", error.message || error);
     let clientMessage = "เกิดข้อผิดพลาดที่เซิร์ฟเวอร์";
     if (error.message === "USER_NOT_FOUND") clientMessage = "ไม่พบข้อมูลผู้เล่น";
     else if (error.message === "WALLET_NOT_FOUND") clientMessage = "ไม่พบกระเป๋าที่ผูกไว้";
@@ -343,6 +331,52 @@ app.post("/api/withdraw", async (req, res) => {
     res.status(400).json({ success: false, message: clientMessage });
   }
 });
+
+// ==========================================
+// API 5: WITHDRAW SUCCESS (หักเงินจริงหลังผู้เล่นยืนยัน World App สำเร็จ)
+// ==========================================
+app.post("/api/withdraw-success", async (req, res) => {
+  try {
+    const { userId, amount, nonce } = req.body;
+    if (!userId || !amount || !nonce) return res.status(400).json({ success: false });
+
+    const requestAmount = Number(amount);
+    const userRef = db.collection("users").doc(userId);
+
+    // หักเงินจริงด้วย Transaction
+    const newBalance = await db.runTransaction(async (t) => {
+      const doc = await t.get(userRef);
+      if (!doc.exists) throw new Error("USER_NOT_FOUND");
+
+      const userData = doc.data();
+      
+      // 🌟 หัวใจสำคัญ: ป้องกันการหักเงินซ้ำ (เผื่อเน็ตกระตุกแล้วยิง API เบิ้ล)
+      const usedNonces = userData.usedWithdrawNonces || [];
+      if (usedNonces.includes(nonce)) throw new Error("ALREADY_DEDUCTED");
+
+      const realBalance = Number(userData.coin) || 0;
+      if (realBalance < requestAmount) throw new Error("INSUFFICIENT_FUNDS");
+
+      const updatedBalance = realBalance - requestAmount;
+      usedNonces.push(nonce); // จำไว้ว่าบิลนี้หักเงินไปแล้ว
+
+      t.update(userRef, { 
+        coin: updatedBalance, 
+        usedWithdrawNonces: usedNonces, 
+        lastWithdrawal: new Date().toISOString() 
+      });
+
+      return updatedBalance; 
+    });
+
+    console.log(`✅ [DB Deducted] User: ${userId} | Remained: ${newBalance} Coins`);
+    res.json({ success: true, newBalance: newBalance });
+  } catch (error) {
+    console.error("❌ Withdraw Sync Error:", error.message);
+    res.status(400).json({ success: false, message: error.message });
+  }
+});
+
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Secure Server running on port ${PORT}`));
