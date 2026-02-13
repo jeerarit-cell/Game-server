@@ -150,7 +150,177 @@ app.post("/api/withdraw", async (req, res) => {
 });
 
 // ==========================================
-// 4. START SERVER
+// 4. START SERVER SAVE
 // ==========================================
+    // ==========================================
+// ⚔️ BATTLE RESULT API (เซิร์ฟเวอร์เป็นคนเซฟ)
+// ==========================================
+app.post("/api/battle-result", async (req, res) => {
+  try {
+    const { userId, monsterId, result, playerHpPercent } = req.body;
+
+    if (!userId || !monsterId || !result) {
+      return res.status(400).json({ success: false, message: "ข้อมูลไม่ครบถ้วน" });
+    }
+
+    // 1. ตรวจสอบว่ามีมอนสเตอร์ตัวนี้จริงๆ ไหม
+    const monster = monsterDB.find(m => m.id === monsterId);
+    if (!monster) return res.status(400).json({ success: false, message: "ไม่พบมอนสเตอร์" });
+
+    const userRef = db.collection("users").doc(userId);
+
+    // 2. ใช้ Transaction ล็อคข้อมูล ป้องกันการกดรัวๆ (Double Request)
+    const updatedData = await db.runTransaction(async (t) => {
+      const doc = await t.get(userRef);
+      if (!doc.exists) throw new Error("USER_NOT_FOUND");
+
+      let userData = doc.data();
+      let currentCoin = Number(userData.coin) || 0;
+      let currentLevel = Number(userData.level) || 1;
+      let currentExp = Number(userData.exp) || 0;
+      let maxHp = 20 + ((currentLevel - 1) * 2);
+      
+      // ดึงข้อมูลรายวันมาเช็ค Limit
+      let earnedToday = Number(userData.earnedFromGameToday) || 0;
+      let lastRewardDate = userData.lastRewardDate || "";
+      
+      const today = new Date().toDateString();
+      if (today !== lastRewardDate) {
+        earnedToday = 0;
+        lastRewardDate = today;
+      }
+
+      // ตัวแปรสำหรับส่งกลับไปให้หน้าบ้านโชว์
+      let rewardCoin = 0;
+      let rewardExp = 0;
+      let isLevelUp = false;
+      let feeRefund = 0;
+      
+      const entryFee = maxHp; // ค่าเข้าคือ Max HP
+
+      // =======================================
+      // 🏆 คำนวณผลลัพธ์ตามที่หน้าบ้านส่งมา
+      // =======================================
+      if (result === "win") {
+        // --- กรณีชนะ ---
+        let baseReward = (playerHpPercent >= 0.5) ? monster.hp : Math.floor(monster.hp / 2);
+        
+        // เช็คลิมิตรายวัน
+        if (earnedToday + baseReward > DAILY_GAME_LIMIT) {
+          baseReward = Math.max(0, DAILY_GAME_LIMIT - earnedToday);
+        }
+
+        rewardCoin = baseReward + entryFee; // กำไร + คืนทุน
+        rewardExp = expReward[monster.type] || 1;
+
+        currentCoin += rewardCoin;
+        currentExp += rewardExp;
+        earnedToday += baseReward;
+
+        // เช็คเลเวลอัพ
+        while (levelConfig[currentLevel] && currentExp >= levelConfig[currentLevel].need) {
+          currentLevel++;
+          isLevelUp = true;
+          maxHp = 20 + ((currentLevel - 1) * 2);
+        }
+
+      } else if (result === "lose") {
+        // --- กรณีแพ้ ---
+        // สมมติหน้าบ้านคำนวณมาให้ว่าควรได้คืนไหม (เพื่อความง่าย เราให้ Server คืนครึ่งนึงเสมอถ้าแพ้)
+        feeRefund = Math.floor(entryFee / 2);
+        currentCoin += feeRefund;
+      } else if (result === "draw") {
+        // --- กรณีเสมอ --- (ไม่ได้ไม่เสีย ให้สู้ใหม่รอบหน้า)
+        // หักค่าเข้าไปแล้วก่อนหน้านี้ เสมอไม่มีเงินคืน
+      }
+
+      // =======================================
+      // 💾 เซิร์ฟเวอร์สั่งเซฟข้อมูลลง Firebase!
+      // =======================================
+      const newData = {
+        coin: currentCoin,
+        level: currentLevel,
+        exp: currentExp,
+        hp: maxHp, // รีเลือดให้เต็ม
+        earnedFromGameToday: earnedToday,
+        lastRewardDate: lastRewardDate,
+        updatedAt: new Date().toISOString()
+      };
+
+      t.update(userRef, newData);
+
+      // คืนค่ากลับไปบอกหน้าบ้านว่าเกิดอะไรขึ้นบ้าง
+      return { 
+        ...newData, 
+        rewardCoin, 
+        rewardExp, 
+        isLevelUp, 
+        feeRefund 
+      };
+    });
+
+    // ส่ง Response กลับไปหาตัวเกม
+    res.json({
+      success: true,
+      data: updatedData
+    });
+
+  } catch (error) {
+    console.error("Battle Save Error:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+     // ==========================================
+// 🆕 REGISTER API (สร้างผู้เล่นใหม่ & แจกเงินเริ่มต้น)
+// ==========================================
+app.post("/api/register", async (req, res) => {
+  try {
+    const { userId, wallet, name } = req.body;
+
+    if (!userId || !wallet || !name) {
+      return res.status(400).json({ success: false, message: "ข้อมูลไม่ครบถ้วน" });
+    }
+
+    const userRef = db.collection("users").doc(userId);
+
+    // ใช้ Transaction เพื่อความชัวร์ ป้องกันคนกดย้ำๆ เพื่อปั๊มเงิน 200 รัวๆ
+    await db.runTransaction(async (t) => {
+      const doc = await t.get(userRef);
+
+      // 🛡️ เช็คว่าถ้าผู้เล่นคนนี้เคยผูกกระเป๋าไปแล้ว จะไม่ยอมให้เซฟทับ (ป้องกันการรีเซ็ตไอดี)
+      if (doc.exists && doc.data().walletBound) {
+        throw new Error("USER_ALREADY_REGISTERED");
+      }
+
+      // 💾 ให้ Server เป็นคนกำหนดค่าเริ่มต้นทั้งหมด (หน้าบ้านแก้ไขเลขพวกนี้ไม่ได้)
+      t.set(userRef, {
+        name: name,
+        walletAddress: wallet,
+        walletBound: true,
+        coin: 40,          // Server จ่ายเงินขวัญถุง 40 Coins
+        level: 1,           // เริ่มที่เลเวล 1
+        hp: 20,             // เลือด 20
+        exp: 0,
+        earnedFromGameToday: 0,
+        lastRewardDate: new Date().toDateString(),
+        createdAt: new Date().toISOString(),
+        walletBoundAt: new Date().toISOString()
+      }, { merge: true });
+    });
+
+    res.json({ success: true, message: "ลงทะเบียนผู้เล่นใหม่สำเร็จ" });
+
+  } catch (error) {
+    console.error("Register Error:", error);
+    res.status(400).json({ 
+      success: false, 
+      message: error.message === "USER_ALREADY_REGISTERED" 
+        ? "ไอดีนี้ลงทะเบียนไปแล้ว" 
+        : "เกิดข้อผิดพลาดในการลงทะเบียน" 
+    });
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Secure Server running on port ${PORT}`));
