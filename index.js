@@ -376,6 +376,12 @@ app.post("/api/withdraw-success", async (req, res) => {
     res.status(400).json({ success: false, message: error.message });
   }
 });
+  // ==========================================
+// API: PING (ให้ UptimeRobot มาเคาะกันเซิร์ฟเวอร์หลับ)
+// ==========================================
+app.get("/ping", (req, res) => {
+  res.status(200).send("Server is awake!");
+});
 
 
 const PORT = process.env.PORT || 3000;
