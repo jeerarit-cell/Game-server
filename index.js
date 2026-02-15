@@ -162,6 +162,169 @@ app.post("/api/buy-coins", async (req, res) => {
     });
   }
 });
+// ==========================================
+// API 2: BATTLE START (หักเงินค่าเข้าก่อนสู้)
+// ==========================================
+app.post("/api/battle-start", async (req, res) => {
+  try {
+    const { userId, monsterId } = req.body;
+    if (!userId || !monsterId) return res.status(400).json({ success: false, message: "ข้อมูลไม่ครบถ้วน" });
+
+    const monster = monsterDB.find(m => m.id === monsterId);
+    if (!monster) return res.status(400).json({ success: false, message: "ไม่พบมอนสเตอร์" });
+
+    const userRef = db.collection("users").doc(userId);
+
+    const newBalance = await db.runTransaction(async (t) => {
+      const doc = await t.get(userRef);
+      if (!doc.exists) throw new Error("USER_NOT_FOUND");
+
+      let userData = doc.data();
+      let currentCoin = Number(userData.coin) || 0;
+      let entryFee = 20 + ((Number(userData.level) || 1) - 1) * 2; // ค่าเข้า = Max HP ปัจจุบัน
+
+      if (currentCoin < entryFee) throw new Error("INSUFFICIENT_COIN");
+
+      // หักเงินทันที! ป้องกันการหนีออกเกม
+      currentCoin -= entryFee;
+      t.update(userRef, { coin: currentCoin });
+
+      return currentCoin;
+    });
+
+    res.json({ success: true, newBalance: newBalance });
+  } catch (error) {
+    console.error("Battle Start Error:", error);
+    res.status(400).json({ success: false, message: error.message === "INSUFFICIENT_COIN" ? "เงิน COIN ไม่พอ" : "เกิดข้อผิดพลาด" });
+  }
+});
+
+// ==========================================
+// API 3: BATTLE RESULT (คำนวณรางวัลตอนสู้จบ)
+// ==========================================
+app.post("/api/battle-result", async (req, res) => {
+  try {
+    const { userId, monsterId, result, playerHpPercent, enemyHpPercent } = req.body;
+    if (!userId || !monsterId || !result) return res.status(400).json({ success: false, message: "ข้อมูลไม่ครบถ้วน" });
+
+    const monster = monsterDB.find(m => m.id === monsterId);
+    if (!monster) return res.status(400).json({ success: false, message: "ไม่พบมอนสเตอร์" });
+
+    const userRef = db.collection("users").doc(userId);
+    
+    // 📌 ตัวแปรเตรียมไว้สำหรับป้ายวิ่ง
+    let feedPlayerName = "HUNTER";
+    let feedPlayerLevel = 1;
+
+    const payloadToFrontend = await db.runTransaction(async (t) => {
+      const doc = await t.get(userRef);
+      if (!doc.exists) throw new Error("USER_NOT_FOUND");
+
+      let userData = doc.data();
+      
+      // 📌 เก็บชื่อผู้เล่นไว้ใช้กับป้ายวิ่ง
+      feedPlayerName = userData.name || "HUNTER";
+
+      let currentCoin = Number(userData.coin) || 0;
+      let currentLevel = Number(userData.level) || 1;
+      let currentExp = Number(userData.exp) || 0;
+      let maxHp = 20 + ((currentLevel - 1) * 2);
+      let entryFee = maxHp; // ค่าเข้าที่จ่ายไปแล้ว
+      
+      let earnedToday = Number(userData.earnedFromGameToday) || 0;
+      let lastRewardDate = userData.lastRewardDate || "";
+      
+      const today = new Date().toDateString();
+      if (today !== lastRewardDate) {
+        earnedToday = 0;
+        lastRewardDate = today;
+      }
+
+      let rewardCoin = 0; let rewardExp = 0; let feeRefund = 0;
+      let isLevelUp = false; let hitDailyLimit = false; let allowedProfit = 0;
+
+      // ==========================================================
+      // 🏆 คำนวณเงินใหม่ (เพราะผู้เล่นโดนหักเงินไปแล้วใน Battle Start)
+      // ==========================================================
+      if (result === "win") {
+        let baseReward = (playerHpPercent >= 0.5) ? monster.hp : Math.floor(monster.hp / 2);
+        
+        // เช็ค Daily Limit
+        if (earnedToday + baseReward > DAILY_GAME_LIMIT) {
+            allowedProfit = Math.max(0, DAILY_GAME_LIMIT - earnedToday);
+            hitDailyLimit = true;
+        } else {
+            allowedProfit = baseReward;
+        }
+
+        // คืนเงินที่หักไป (entryFee) + กำไรที่ได้ (allowedProfit)
+        rewardCoin = allowedProfit + entryFee; 
+        currentCoin += rewardCoin; 
+
+        // คำนวณ EXP และ Level
+        currentExp += (expReward[monster.type] || 1);
+        earnedToday += allowedProfit;
+
+        while (levelConfig[currentLevel] && currentExp >= levelConfig[currentLevel].need) {
+          currentLevel++;
+          isLevelUp = true;
+          maxHp = 20 + ((currentLevel - 1) * 2);
+        }
+        
+        // 📌 อัปเดตเลเวลล่าสุดไว้ใช้กับป้ายวิ่ง
+        feedPlayerLevel = currentLevel;
+
+      } else if (result === "lose") {
+        if (enemyHpPercent < 0.5) {
+            // Good Fight! คืนเงินให้ครึ่งนึง (เพราะตอนแรกหักไปเต็ม)
+            feeRefund = Math.floor(entryFee / 2);
+            currentCoin += feeRefund; 
+        }
+        // ถ้าแพ้ราบคาบ (enemyHpPercent >= 0.5) ไม่ต้องทำอะไร เพราะเงินโดนหักไปก่อนหน้านี้แล้ว
+      }
+
+      const newData = {
+        coin: currentCoin,
+        level: currentLevel,
+        exp: currentExp,
+        hp: maxHp, 
+        earnedFromGameToday: earnedToday,
+        lastRewardDate: lastRewardDate,
+        updatedAt: new Date().toISOString()
+      };
+
+      t.update(userRef, newData);
+
+      // ส่งกลับไปอัปเดตหน้าจอผู้เล่น
+      return { 
+        ...newData, 
+        rewardCoin, rewardExp, isLevelUp, feeRefund, entryFee, hitDailyLimit, allowedProfit 
+      };
+    });
+
+    // ==========================================================
+    // 📌 [เพิ่มใหม่] บันทึกข้อมูลลง Kill Feed (ทำเมื่อชนะและได้กำไร)
+    // ==========================================================
+    if (result === "win" && payloadToFrontend.allowedProfit > 0) {
+        try {
+            await db.collection('kill_feed').add({
+                playerName: feedPlayerName,
+                level: feedPlayerLevel,
+                monsterName: monster.name,
+                reward: payloadToFrontend.allowedProfit, // โชว์กำไรสุทธิ
+                timestamp: admin.firestore.FieldValue.serverTimestamp()
+            });
+        } catch (feedErr) {
+            console.error("Failed to save kill feed:", feedErr); // ถ้า Error ไม่ต้องให้แอปค้าง
+        }
+    }
+
+    res.json({ success: true, data: payloadToFrontend });
+  } catch (error) {
+    console.error("Battle Save Error:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
 
 // ==========================================
 // API 4: WITHDRAW (ตรวจสอบยอด & สร้างลายเซ็น - ยังไม่หักเงิน)
