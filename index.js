@@ -187,7 +187,9 @@ app.post("/api/battle-start", async (req, res) => {
 
       // หักเงินทันที! ป้องกันการหนีออกเกม
       currentCoin -= entryFee;
-      t.update(userRef, { coin: currentCoin });
+      
+      // 📌 [จุดที่แก้ไข] เพิ่ม inBattle: true เพื่อประทับตราว่าคนนี้จ่ายเงินเข้าห้องบอสแล้ว
+      t.update(userRef, { coin: currentCoin, inBattle: true });
 
       return currentCoin;
     });
@@ -221,6 +223,11 @@ app.post("/api/battle-result", async (req, res) => {
       if (!doc.exists) throw new Error("USER_NOT_FOUND");
 
       let userData = doc.data();
+
+      // 🚨 [จุดที่แก้ไข 1] ดักจับแฮกเกอร์! เช็คว่าได้จ่ายค่าเข้าหรือยัง (มีตรา inBattle ไหม)
+      if (!userData.inBattle) {
+          throw new Error("NO_ACTIVE_BATTLE");
+      }
       
       // 📌 เก็บชื่อผู้เล่นไว้ใช้กับป้ายวิ่ง
       feedPlayerName = userData.name || "HUNTER";
@@ -290,7 +297,8 @@ app.post("/api/battle-result", async (req, res) => {
         hp: maxHp, 
         earnedFromGameToday: earnedToday,
         lastRewardDate: lastRewardDate,
-        updatedAt: new Date().toISOString()
+        updatedAt: new Date().toISOString(),
+        inBattle: false // 📌 [จุดที่แก้ไข 2] สู้จบแล้ว ลบตราประทับออก ป้องกันการเอายอดเดิมมาเบิกซ้ำ!
       };
 
       t.update(userRef, newData);
@@ -303,7 +311,7 @@ app.post("/api/battle-result", async (req, res) => {
     });
 
     // ==========================================================
-    // 📌 [เพิ่มใหม่] บันทึกข้อมูลลง Kill Feed (ทำเมื่อชนะและได้กำไร)
+    // 📌 บันทึกข้อมูลลง Kill Feed (ทำเมื่อชนะและได้กำไร)
     // ==========================================================
     if (result === "win" && payloadToFrontend.allowedProfit > 0) {
         try {
