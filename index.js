@@ -196,12 +196,20 @@ app.post("/api/battle-result", async (req, res) => {
     if (!monster) return res.status(400).json({ success: false, message: "ไม่พบมอนสเตอร์" });
 
     const userRef = db.collection("users").doc(userId);
+    
+    // 📌 ตัวแปรเตรียมไว้สำหรับป้ายวิ่ง
+    let feedPlayerName = "HUNTER";
+    let feedPlayerLevel = 1;
 
     const payloadToFrontend = await db.runTransaction(async (t) => {
       const doc = await t.get(userRef);
       if (!doc.exists) throw new Error("USER_NOT_FOUND");
 
       let userData = doc.data();
+      
+      // 📌 เก็บชื่อผู้เล่นไว้ใช้กับป้ายวิ่ง
+      feedPlayerName = userData.name || "HUNTER";
+
       let currentCoin = Number(userData.coin) || 0;
       let currentLevel = Number(userData.level) || 1;
       let currentExp = Number(userData.exp) || 0;
@@ -247,6 +255,9 @@ app.post("/api/battle-result", async (req, res) => {
           isLevelUp = true;
           maxHp = 20 + ((currentLevel - 1) * 2);
         }
+        
+        // 📌 อัปเดตเลเวลล่าสุดไว้ใช้กับป้ายวิ่ง
+        feedPlayerLevel = currentLevel;
 
       } else if (result === "lose") {
         if (enemyHpPercent < 0.5) {
@@ -276,12 +287,30 @@ app.post("/api/battle-result", async (req, res) => {
       };
     });
 
+    // ==========================================================
+    // 📌 [เพิ่มใหม่] บันทึกข้อมูลลง Kill Feed (ทำเมื่อชนะและได้กำไร)
+    // ==========================================================
+    if (result === "win" && payloadToFrontend.allowedProfit > 0) {
+        try {
+            await db.collection('kill_feed').add({
+                playerName: feedPlayerName,
+                level: feedPlayerLevel,
+                monsterName: monster.name,
+                reward: payloadToFrontend.allowedProfit, // โชว์กำไรสุทธิ
+                timestamp: admin.firestore.FieldValue.serverTimestamp()
+            });
+        } catch (feedErr) {
+            console.error("Failed to save kill feed:", feedErr); // ถ้า Error ไม่ต้องให้แอปค้าง
+        }
+    }
+
     res.json({ success: true, data: payloadToFrontend });
   } catch (error) {
     console.error("Battle Save Error:", error);
     res.status(500).json({ success: false, message: error.message });
   }
 });
+
 
 // ==========================================
 // API 4: WITHDRAW (ตรวจสอบยอด & สร้างลายเซ็น - ยังไม่หักเงิน)
@@ -376,6 +405,74 @@ app.post("/api/withdraw-success", async (req, res) => {
     res.status(400).json({ success: false, message: error.message });
   }
 });
+  // ==========================================
+// API 6: GET KILL FEED (ดึงข้อมูลป้ายวิ่ง 5 อันดับล่าสุด)
+// ==========================================
+app.get("/api/kill-feed", async (req, res) => {
+  try {
+    const snapshot = await db.collection('kill_feed')
+      .orderBy('timestamp', 'desc')
+      .limit(5)
+      .get();
+
+    let feed = [];
+    snapshot.forEach(doc => {
+      const data = doc.data();
+      feed.push({
+        playerName: data.playerName,
+        level: data.level,
+        monsterName: data.monsterName,
+        reward: data.reward
+      });
+    });
+
+    res.json({ success: true, data: feed });
+  } catch (error) {
+    console.error("Get Kill Feed Error:", error);
+    res.status(500).json({ success: false, message: "Error fetching feed" });
+  }
+});
+   // ==========================================
+// AUTO CLEANUP: ลบข้อมูลป้ายวิ่งเก่า (เหลือแค่ 50 รายการล่าสุด)
+// ==========================================
+async function cleanupOldFeeds() {
+  try {
+    const snapshot = await db.collection('kill_feed')
+      .orderBy('timestamp', 'desc')
+      .offset(50)
+      .get();
+
+    if (snapshot.empty) return;
+
+    let batch = db.batch();
+    let deletedCount = 0;
+
+    snapshot.docs.forEach((doc) => {
+      batch.delete(doc.ref);
+      deletedCount++;
+      // ตัดรอบ commit ทุกๆ 500 รายการตามข้อจำกัดของ Firestore
+      if (deletedCount % 500 === 0) {
+        batch.commit();
+        batch = db.batch(); 
+      }
+    });
+
+    if (deletedCount % 500 !== 0) {
+      await batch.commit();
+    }
+
+    console.log(`🗑️ [Auto-Cleanup] ลบประวัติป้ายวิ่งเก่าทิ้งไป ${deletedCount} รายการ`);
+  } catch (error) {
+    console.error("❌ Cleanup Error:", error);
+  }
+}
+
+// 📌 รันทำความสะอาดทุกๆ 24 ชั่วโมง
+setInterval(cleanupOldFeeds, 24 * 60 * 60 * 1000);
+// 📌 รัน 1 ครั้งทันทีเมื่อเปิดเซิร์ฟเวอร์
+cleanupOldFeeds();
+
+
   // ==========================================
 // API: PING (ให้ UptimeRobot มาเคาะกันเซิร์ฟเวอร์หลับ)
 // ==========================================
