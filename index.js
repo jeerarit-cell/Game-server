@@ -533,7 +533,8 @@ async function cleanupOldFeeds() {
     let batch = db.batch();
     let deletedCount = 0;
 
-    snapshot.docs.forEach((doc) => {
+     // 📌 [อัปเกรด] เปลี่ยนมาใช้ for...of เพื่อให้ระบบ "รอคิว" ได้อย่างสมบูรณ์
+    for (const doc of snapshot.docs) {
       batch.delete(doc.ref);
       deletedCount++;
       // ตัดรอบ commit ทุกๆ 500 รายการตามข้อจำกัดของ Firestore
