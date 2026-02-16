@@ -356,9 +356,16 @@ app.post("/api/battle-action", async (req, res) => {
           t.update(userRef, newData);
       }
 
-      // ส่งผลลัพธ์ทั้งหมดกลับไปให้หน้าจอ
+            // ส่งผลลัพธ์ทั้งหมดกลับไปให้หน้าจอ
       return { 
-          enemyDeck, eHp, pHp, battleStatus, pDmg: (pDmg * multiplier), eDmg: (eDmg * multiplier),
+          enemyDeck, 
+          eHp: displayEHp, // 📌 เปลี่ยนตรงนี้ เพื่อส่งเลือดหลอก (0) ไปเล่นแอนิเมชัน
+          pHp: displayPHp, // 📌 เปลี่ยนตรงนี้ด้วย
+          battleStatus, 
+          pDmg: (pDmg * multiplier), 
+          eDmg: (eDmg * multiplier),
+          // ... (ตัวแปรอื่นๆ ปล่อยไว้เหมือนเดิมครับ)
+
           rewardCoin, rewardExp, isLevelUp, feeRefund, entryFee, hitDailyLimit, allowedProfit,
           coin: currentCoin, level: currentLevel, exp: currentExp, hp: maxHp // ส่งค่าใหม่กลับไปอัปเดตหน้าจอด้วย
       };
