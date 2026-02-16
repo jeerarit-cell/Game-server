@@ -292,14 +292,19 @@ app.post("/api/battle-action", async (req, res) => {
       let rewardCoin = 0; let rewardExp = 0; let feeRefund = 0;
       let isLevelUp = false; let hitDailyLimit = false; let allowedProfit = 0;
 
-      // 🏆 เช็คผลแพ้ชนะตรงนี้เลย
+            // 🏆 เช็คผลแพ้ชนะ (Double KO อยู่นี่)
+      let displayEHp = eHp; // เตรียมตัวแปรไว้ส่งให้หน้าจอโชว์แอนิเมชัน
+      let displayPHp = pHp;
+
       if (eHp <= 0 && pHp <= 0) {
           battleStatus = "double_ko";
-          multiplier *= 2; eHp = monster.hp; pHp = maxHp; // รีเซ็ตเลือด
+          multiplier = 2; // 📌 แก้เป็น = 2 (ให้เหมือนโค้ดต้นฉบับเป๊ะ)
+          eHp = monster.hp; pHp = maxHp; // 📌 รีเซ็ตเลือดลง Database เตรียมรอเทิร์นหน้า
+          displayEHp = 0; displayPHp = 0; // 📌 แต่หลอกส่ง 0 ไปให้หน้าจอเล่นแอนิเมชันตายคู่
       } else if (eHp <= 0) {
-          battleStatus = "win"; eHp = 0;
+          battleStatus = "win"; eHp = 0; displayEHp = 0;
       } else if (pHp <= 0) {
-          battleStatus = "lose"; pHp = 0;
+          battleStatus = "lose"; pHp = 0; displayPHp = 0;
       }
 
       // 💾 ถ้าเกมยังไม่จบ อัปเดตเลือดลง Database แล้วรอรับไพ่เทิร์นหน้า
