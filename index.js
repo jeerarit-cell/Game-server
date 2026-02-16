@@ -163,7 +163,7 @@ app.post("/api/buy-coins", async (req, res) => {
   }
 });
 // ==========================================
-// API 2: BATTLE START (หักเงินค่าเข้าก่อนสู้)
+// API 2: BATTLE START (หักเงินค่าเข้าก่อนสู้ & สร้างห้องสู้บนเซิร์ฟเวอร์)
 // ==========================================
 app.post("/api/battle-start", async (req, res) => {
   try {
@@ -188,8 +188,15 @@ app.post("/api/battle-start", async (req, res) => {
       // หักเงินทันที! ป้องกันการหนีออกเกม
       currentCoin -= entryFee;
       
-      // 📌 [จุดที่แก้ไข] เพิ่ม inBattle: true เพื่อประทับตราว่าคนนี้จ่ายเงินเข้าห้องบอสแล้ว
-      t.update(userRef, { coin: currentCoin, inBattle: true });
+      // 📌 [จุดที่แก้ไข] เพิ่ม inBattle และให้เซิร์ฟเวอร์จำเลือดบอส/เลือดผู้เล่นไว้ที่ตัวเอง
+      t.update(userRef, { 
+        coin: currentCoin, 
+        inBattle: true,
+        b_monsterId: monsterId,
+        b_eHp: monster.hp,       // จำเลือดบอส
+        b_pHp: entryFee,         // จำเลือดผู้เล่น (เท่ากับ Max HP)
+        b_multiplier: 1          // ตัวคูณดาเมจเริ่มต้นที่ 1
+      });
 
       return currentCoin;
     });
@@ -202,21 +209,28 @@ app.post("/api/battle-start", async (req, res) => {
 });
 
 // ==========================================
-// API 3: BATTLE RESULT (คำนวณรางวัลตอนสู้จบ)
+// API 3: BATTLE ACTION (แทนที่ BATTLE RESULT เดิม - เซิร์ฟเวอร์ดวลไพ่สดๆ)
 // ==========================================
-app.post("/api/battle-result", async (req, res) => {
+app.post("/api/battle-action", async (req, res) => {
   try {
-    const { userId, monsterId, result, playerHpPercent, enemyHpPercent } = req.body;
-    if (!userId || !monsterId || !result) return res.status(400).json({ success: false, message: "ข้อมูลไม่ครบถ้วน" });
+    const { userId, playerDeck } = req.body; // 📌 รับไพ่ 5 ใบจากผู้เล่น
 
-    const monster = monsterDB.find(m => m.id === monsterId);
-    if (!monster) return res.status(400).json({ success: false, message: "ไม่พบมอนสเตอร์" });
+    // 🛡️ [จุดที่แก้ไข - ดักแฮกเกอร์ 1] เช็คว่าส่งไพ่มาครบ 5 ใบ และต้องเป็นเลข 1, 2, 3, 4, 5 เท่านั้น!
+    if (!userId || !Array.isArray(playerDeck) || playerDeck.length !== 5) {
+        return res.status(400).json({ success: false, message: "ข้อมูลไพ่ไม่ถูกต้อง" });
+    }
+    const isValidDeck = [...playerDeck].sort((a,b) => a-b).join(',') === '1,2,3,4,5';
+    if (!isValidDeck) {
+        console.warn(`🚨 HACKER DETECTED! User: ${userId} ส่งไพ่โกง: [${playerDeck}]`);
+        return res.status(400).json({ success: false, message: "ตรวจพบการโกงไพ่!" });
+    }
 
     const userRef = db.collection("users").doc(userId);
     
-    // 📌 ตัวแปรเตรียมไว้สำหรับป้ายวิ่ง
+    // ตัวแปรเตรียมไว้สำหรับป้ายวิ่ง
     let feedPlayerName = "HUNTER";
     let feedPlayerLevel = 1;
+    let actualMonsterName = "";
 
     const payloadToFrontend = await db.runTransaction(async (t) => {
       const doc = await t.get(userRef);
@@ -224,13 +238,16 @@ app.post("/api/battle-result", async (req, res) => {
 
       let userData = doc.data();
 
-      // 🚨 [จุดที่แก้ไข 1] ดักจับแฮกเกอร์! เช็คว่าได้จ่ายค่าเข้าหรือยัง (มีตรา inBattle ไหม)
-      if (!userData.inBattle) {
-          throw new Error("NO_ACTIVE_BATTLE");
-      }
+      // 🚨 [จุดที่แก้ไข - ดักแฮกเกอร์ 2] เช็คว่าได้จ่ายค่าเข้าหรือยัง (มีตรา inBattle ไหม)
+      if (!userData.inBattle) throw new Error("NO_ACTIVE_BATTLE");
       
-      // 📌 เก็บชื่อผู้เล่นไว้ใช้กับป้ายวิ่ง
+      // ดึงข้อมูลมอนสเตอร์จาก Database ที่เซิร์ฟเวอร์จำไว้
+      const monsterId = userData.b_monsterId;
+      const monster = monsterDB.find(m => m.id === monsterId);
+      if (!monster) throw new Error("MONSTER_NOT_FOUND");
+      
       feedPlayerName = userData.name || "HUNTER";
+      actualMonsterName = monster.name;
 
       let currentCoin = Number(userData.coin) || 0;
       let currentLevel = Number(userData.level) || 1;
@@ -238,92 +255,119 @@ app.post("/api/battle-result", async (req, res) => {
       let maxHp = 20 + ((currentLevel - 1) * 2);
       let entryFee = maxHp; // ค่าเข้าที่จ่ายไปแล้ว
       
+      // 📌 ดึงข้อมูลการสู้จากรอบที่แล้วมาทำต่อ (เซิร์ฟเวอร์จำไว้)
+      let eHp = Number(userData.b_eHp);
+      let pHp = Number(userData.b_pHp);
+      let multiplier = Number(userData.b_multiplier);
+      
       let earnedToday = Number(userData.earnedFromGameToday) || 0;
       let lastRewardDate = userData.lastRewardDate || "";
-      
       const today = new Date().toDateString();
       if (today !== lastRewardDate) {
         earnedToday = 0;
         lastRewardDate = today;
       }
 
+      // 🤖 เซิร์ฟเวอร์สุ่มไพ่ตัวเองสดๆ!
+      let enemyDeck = [1, 2, 3, 4, 5].sort(() => Math.random() - 0.5);
+
+      // ⚔️ เซิร์ฟเวอร์เอาไพ่มาดวลกันบนอากาศ
+      let pDmg = 0; let eDmg = 0;
+      let pSurvivors = []; let eSurvivors = [];
+
+      for(let i=0; i<5; i++) {
+          if (playerDeck[i] > enemyDeck[i]) pSurvivors.push(playerDeck[i]);
+          else if (enemyDeck[i] > playerDeck[i]) eSurvivors.push(enemyDeck[i]);
+      }
+
+      if (pSurvivors.length > eSurvivors.length) pDmg = pSurvivors.reduce((a, b) => a + b, 0);
+      else if (eSurvivors.length > pSurvivors.length) eDmg = eSurvivors.reduce((a, b) => a + b, 0);
+      else { pDmg = pSurvivors.reduce((a, b) => a + b, 0); eDmg = eSurvivors.reduce((a, b) => a + b, 0); }
+
+      // หักเลือดตามตัวคูณ
+      eHp -= (pDmg * multiplier);
+      pHp -= (eDmg * multiplier);
+
+      let battleStatus = "playing"; // สถานะเริ่มต้นคือสู้ต่อ
       let rewardCoin = 0; let rewardExp = 0; let feeRefund = 0;
       let isLevelUp = false; let hitDailyLimit = false; let allowedProfit = 0;
 
-      // ==========================================================
-      // 🏆 คำนวณเงินใหม่ (เพราะผู้เล่นโดนหักเงินไปแล้วใน Battle Start)
-      // ==========================================================
-      if (result === "win") {
-        let baseReward = (playerHpPercent >= 0.5) ? monster.hp : Math.floor(monster.hp / 2);
-        
-        // เช็ค Daily Limit
-        if (earnedToday + baseReward > DAILY_GAME_LIMIT) {
-            allowedProfit = Math.max(0, DAILY_GAME_LIMIT - earnedToday);
-            hitDailyLimit = true;
-        } else {
-            allowedProfit = baseReward;
-        }
-
-        // คืนเงินที่หักไป (entryFee) + กำไรที่ได้ (allowedProfit)
-        rewardCoin = allowedProfit + entryFee; 
-        currentCoin += rewardCoin; 
-
-        // คำนวณ EXP และ Level
-        currentExp += (expReward[monster.type] || 1);
-        earnedToday += allowedProfit;
-
-        while (levelConfig[currentLevel] && currentExp >= levelConfig[currentLevel].need) {
-          currentLevel++;
-          isLevelUp = true;
-          maxHp = 20 + ((currentLevel - 1) * 2);
-        }
-        
-        // 📌 อัปเดตเลเวลล่าสุดไว้ใช้กับป้ายวิ่ง
-        feedPlayerLevel = currentLevel;
-
-      } else if (result === "lose") {
-        if (enemyHpPercent < 0.5) {
-            // Good Fight! คืนเงินให้ครึ่งนึง (เพราะตอนแรกหักไปเต็ม)
-            feeRefund = Math.floor(entryFee / 2);
-            currentCoin += feeRefund; 
-        }
-        // ถ้าแพ้ราบคาบ (enemyHpPercent >= 0.5) ไม่ต้องทำอะไร เพราะเงินโดนหักไปก่อนหน้านี้แล้ว
+      // 🏆 เช็คผลแพ้ชนะตรงนี้เลย
+      if (eHp <= 0 && pHp <= 0) {
+          battleStatus = "double_ko";
+          multiplier *= 2; eHp = monster.hp; pHp = maxHp; // รีเซ็ตเลือด
+      } else if (eHp <= 0) {
+          battleStatus = "win"; eHp = 0;
+      } else if (pHp <= 0) {
+          battleStatus = "lose"; pHp = 0;
       }
 
-      const newData = {
-        coin: currentCoin,
-        level: currentLevel,
-        exp: currentExp,
-        hp: maxHp, 
-        earnedFromGameToday: earnedToday,
-        lastRewardDate: lastRewardDate,
-        updatedAt: new Date().toISOString(),
-        inBattle: false // 📌 [จุดที่แก้ไข 2] สู้จบแล้ว ลบตราประทับออก ป้องกันการเอายอดเดิมมาเบิกซ้ำ!
-      };
+      // 💾 ถ้าเกมยังไม่จบ อัปเดตเลือดลง Database แล้วรอรับไพ่เทิร์นหน้า
+      if (battleStatus === "playing" || battleStatus === "double_ko") {
+          t.update(userRef, { b_eHp: eHp, b_pHp: pHp, b_multiplier: multiplier });
+      } 
+      // 🏁 ถ้าเกมจบ แจกเงินและลบห้องทิ้ง!
+      else {
+          if (battleStatus === "win") {
+            let hpPercent = pHp / maxHp;
+            let baseReward = (hpPercent >= 0.5) ? monster.hp : Math.floor(monster.hp / 2);
+            
+            if (earnedToday + baseReward > DAILY_GAME_LIMIT) {
+                allowedProfit = Math.max(0, DAILY_GAME_LIMIT - earnedToday);
+                hitDailyLimit = true;
+            } else {
+                allowedProfit = baseReward;
+            }
 
-      t.update(userRef, newData);
+            rewardCoin = allowedProfit + entryFee; 
+            currentCoin += rewardCoin; 
 
-      // ส่งกลับไปอัปเดตหน้าจอผู้เล่น
+            currentExp += (expReward[monster.type] || 1);
+            earnedToday += allowedProfit;
+
+            while (levelConfig[currentLevel] && currentExp >= levelConfig[currentLevel].need) {
+              currentLevel++;
+              isLevelUp = true;
+              maxHp = 20 + ((currentLevel - 1) * 2);
+            }
+            feedPlayerLevel = currentLevel;
+
+          } else if (battleStatus === "lose") {
+            let eHpPercent = eHp / monster.hp;
+            if (eHpPercent < 0.5) {
+                // คืนเงินครึ่งนึง
+                feeRefund = Math.floor(entryFee / 2);
+                currentCoin += feeRefund; 
+            }
+          }
+
+          const newData = {
+            coin: currentCoin, level: currentLevel, exp: currentExp, hp: maxHp, 
+            earnedFromGameToday: earnedToday, lastRewardDate: lastRewardDate, updatedAt: new Date().toISOString(),
+            inBattle: false, // 📌 สู้จบแล้ว ลบตราประทับออก
+            b_eHp: admin.firestore.FieldValue.delete(), b_pHp: admin.firestore.FieldValue.delete(),
+            b_multiplier: admin.firestore.FieldValue.delete(), b_monsterId: admin.firestore.FieldValue.delete()
+          };
+          t.update(userRef, newData);
+      }
+
+      // ส่งผลลัพธ์ทั้งหมดกลับไปให้หน้าจอ
       return { 
-        ...newData, 
-        rewardCoin, rewardExp, isLevelUp, feeRefund, entryFee, hitDailyLimit, allowedProfit 
+          enemyDeck, eHp, pHp, battleStatus, pDmg: (pDmg * multiplier), eDmg: (eDmg * multiplier),
+          rewardCoin, rewardExp, isLevelUp, feeRefund, entryFee, hitDailyLimit, allowedProfit,
+          coin: currentCoin, level: currentLevel, exp: currentExp, hp: maxHp // ส่งค่าใหม่กลับไปอัปเดตหน้าจอด้วย
       };
     });
 
-    // ==========================================================
     // 📌 บันทึกข้อมูลลง Kill Feed (ทำเมื่อชนะและได้กำไร)
-    // ==========================================================
-    if (result === "win" && payloadToFrontend.allowedProfit > 0) {
+    if (payloadToFrontend.battleStatus === "win" && payloadToFrontend.allowedProfit > 0) {
         try {
             await db.collection('kill_feed').add({
-                playerName: feedPlayerName,
-                level: feedPlayerLevel,
-                monsterName: monster.name,
-                reward: payloadToFrontend.allowedProfit, // โชว์กำไรสุทธิ
-                timestamp: admin.firestore.FieldValue.serverTimestamp()
+                playerName: feedPlayerName, level: feedPlayerLevel, monsterName: actualMonsterName,
+                reward: payloadToFrontend.allowedProfit, timestamp: admin.firestore.FieldValue.serverTimestamp()
             });
         } catch (feedErr) {
-            console.error("Failed to save kill feed:", feedErr); // ถ้า Error ไม่ต้องให้แอปค้าง
+            console.error("Failed to save kill feed:", feedErr); 
         }
     }
 
