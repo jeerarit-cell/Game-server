@@ -38,7 +38,7 @@ const MIN_BUY_WLD = Number(process.env.MIN_BUY_WLD) || 0.1;
 const MIN_WITHDRAW_COIN = Number(process.env.MIN_WITHDRAW_COIN) || 1100;
 
 if (!PRIVATE_KEY || !VAULT_ADDRESS) {
-  console.error("❌ MISSING CONFIG: ตรวจสอบ SIGNER_PRIVATE_KEY หรือ CONTRACT_ADDRESS");
+  console.error("❌ MISSING CONFIG:SIGNER_PRIVATE_KEY and CONTRACT_ADDRESS");
   process.exit(1);
 }
 
@@ -100,7 +100,7 @@ app.post("/api/buy-coins", async (req, res) => {
   try {
     const { userId, amountBought, reference, wldAmount } = req.body;
     if (Number(wldAmount) < MIN_BUY_WLD) {
-      return res.status(400).json({ success: false, message: `ขั้นต่ำในการซื้อคือ ${MIN_BUY_WLD} WLD` });
+      return res.status(400).json({ success: false, message: `Minimum purchase is 0.1 WLD` });
     }
     const userRef = db.collection("users").doc(userId);
     const txRef = db.collection("transactions").doc(String(reference));
@@ -181,7 +181,7 @@ app.post("/api/withdraw", async (req, res) => {
   try {
     const { userId, amount } = req.body;
     const requestAmount = Number(amount);
-    if (requestAmount < MIN_WITHDRAW_COIN) return res.status(400).json({ success: false, message: `ถอนขั้นต่ำ ${MIN_WITHDRAW_COIN} Coins` });
+    if (requestAmount < MIN_WITHDRAW_COIN) return res.status(400).json({ success: false, message: `Minimum withdrawal is 1,100 Coins' });
 
     const userRef = db.collection("users").doc(userId);
     const doc = await userRef.get();
