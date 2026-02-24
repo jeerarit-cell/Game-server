@@ -567,6 +567,65 @@ cleanupOldFeeds();
 app.get("/ping", (req, res) => {
   res.status(200).send("Server is awake!");
 });
+// ==========================================
+// API NEW: CLAIM CHASER (เติมกลับเข้าไปเพื่อให้ระบบ Swap ทำงานได้)
+// ==========================================
+app.post("/api/claim-chaser", async (req, res) => {
+  try {
+    const { userId, wldTxHash, amountWld } = req.body;
+
+    // 1. ตรวจสอบข้อมูลเบื้องต้น
+    if (!userId || !wldTxHash || !amountWld) {
+      return res.status(400).json({ success: false, message: "ข้อมูลไม่ครบถ้วน" });
+    }
+
+    // 2. เช็คบน Blockchain ว่าโอนจริงไหม
+    const tx = await provider.getTransaction(wldTxHash);
+    if (!tx) return res.status(400).json({ success: false, message: "ไม่พบรายการบนบล็อกเชน" });
+
+    // เช็คว่าโอนเข้ากระเป๋ากองกลางจริงไหม (ต้องตั้งค่า WLD_POOL_WALLET ใน .env)
+    const isToVault = tx.to.toLowerCase() === process.env.WLD_POOL_WALLET.toLowerCase();
+    if (!isToVault) return res.status(400).json({ success: false, message: "โอนผิดกระเป๋า" });
+
+    // 3. ป้องกันการใช้ซ้ำ & สร้าง Signature
+    const swapRef = db.collection("chaser_swaps").doc(wldTxHash);
+    const userRef = db.collection("users").doc(userId);
+
+    const claimData = await db.runTransaction(async (t) => {
+      const swapDoc = await t.get(swapRef);
+      if (swapDoc.exists) throw new Error("TX_USED");
+
+      const userDoc = await t.get(userRef);
+      if (!userDoc.exists) throw new Error("USER_NOT_FOUND");
+
+      const chaserRate = 10000;
+      const chaserBonus = 1.02;
+      const finalChaserAmount = Number(amountWld) * chaserRate * chaserBonus;
+
+      const amountChaserWei = ethers.parseUnits(finalChaserAmount.toFixed(0), 18);
+      const nonce = Date.now();
+      const deadline = Math.floor(Date.now() / 1000) + (60 * 10);
+
+      // บันทึกกันโกง
+      t.set(swapRef, { userId, wldAmount: amountWld, status: "PENDING", timestamp: admin.firestore.FieldValue.serverTimestamp() });
+
+      // สร้างลายเซ็น (ใช้อ้างอิงจาก VAULT และ TOKEN ใน .env)
+      const packedData = ethers.solidityPackedKeccak256(
+        ["address", "uint256", "uint256", "uint256", "address"],
+        [userDoc.data().walletAddress, amountChaserWei, nonce, deadline, process.env.CHASER_VAULT_ADDRESS]
+      );
+      const signature = await signer.signMessage(ethers.getBytes(packedData));
+
+      return { amount: amountChaserWei.toString(), nonce, deadline, signature };
+    });
+
+    res.json({ success: true, claimData });
+  } catch (error) {
+    console.error("Swap Error:", error.message);
+    res.status(400).json({ success: false, message: error.message });
+  }
+});
+
 
 
 const PORT = process.env.PORT || 3000;
