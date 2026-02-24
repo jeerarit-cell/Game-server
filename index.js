@@ -1,4 +1,4 @@
-Const express = require("express");
+const express = require("express");
 const cors = require("cors");
 const { ethers } = require("ethers");
 const admin = require("firebase-admin");
@@ -16,7 +16,7 @@ try {
   if (!process.env.FIREBASE_KEY) throw new Error("Missing FIREBASE_KEY");
   serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
 } catch (error) {
-  console.error("❌ FIREBASE INIT ERROR: FIREBASE_KEY\n", error.message);
+  console.error("❌ FIREBASE INIT ERROR: ตรวจสอบ FIREBASE_KEY\n", error.message);
   process.exit(1);
 }
 
@@ -34,7 +34,7 @@ const VAULT_ADDRESS = process.env.CONTRACT_ADDRESS;
 const SELL_RATE = Number(process.env.SELL_RATE_COIN_PER_WLD) || 1100;
 
 if (!PRIVATE_KEY || !VAULT_ADDRESS) {
-  console.error("❌ MISSING CONFIG: SIGNER_PRIVATE_KEY OR CONTRACT_ADDRESS");
+  console.error("❌ MISSING CONFIG: ตรวจสอบ SIGNER_PRIVATE_KEY หรือ CONTRACT_ADDRESS");
   process.exit(1);
 }
 
@@ -85,7 +85,7 @@ app.post("/api/get-player", async (req, res) => {
 app.post("/api/register", async (req, res) => {
   try {
     const { userId, wallet, name } = req.body;
-    if (!userId || !wallet || !name) return res.status(400).json({ success: false, message: "Required information is missing" });
+    if (!userId || !wallet || !name) return res.status(400).json({ success: false, message: "ข้อมูลไม่ครบถ้วน" });
 
     const userRef = db.collection("users").doc(userId);
 
@@ -107,10 +107,10 @@ app.post("/api/register", async (req, res) => {
       }, { merge: true });
     });
 
-    res.json({ success: true, message: "Character registration successful" });
+    res.json({ success: true, message: "ลงทะเบียนผู้เล่นใหม่สำเร็จ" });
   } catch (error) {
     console.error("Register Error:", error);
-    res.status(400).json({ success: false, message: error.message === "USER_ALREADY_REGISTERED" ? "This ID is already registered" });
+    res.status(400).json({ success: false, message: error.message === "USER_ALREADY_REGISTERED" ? "ไอดีนี้ลงทะเบียนไปแล้ว" : "เกิดข้อผิดพลาด" });
   }
 });
 
@@ -158,7 +158,7 @@ app.post("/api/buy-coins", async (req, res) => {
     console.error("Buy Coins Error:", error);
     res.status(400).json({ 
       success: false, 
-      message: error.message === "REFERENCE_ALREADY_USED"
+      message: error.message === "REFERENCE_ALREADY_USED" ? "ใบเสร็จนี้ถูกใช้งานเติมเงินไปแล้ว" : "เกิดข้อผิดพลาดในการอัปเดตเหรียญ" 
     });
   }
 });
@@ -171,7 +171,7 @@ app.post("/api/battle-start", async (req, res) => {
     if (!userId || !monsterId) return res.status(400).json({ success: false, message: "ข้อมูลไม่ครบถ้วน" });
 
     const monster = monsterDB.find(m => m.id === monsterId);
-    if (!monster) return res.status(400).json({ success: false, message: "No math monster" });
+    if (!monster) return res.status(400).json({ success: false, message: "ไม่พบมอนสเตอร์" });
 
     const userRef = db.collection("users").doc(userId);
 
@@ -204,7 +204,7 @@ app.post("/api/battle-start", async (req, res) => {
     res.json({ success: true, newBalance: newBalance });
   } catch (error) {
     console.error("Battle Start Error:", error);
-    res.status(400).json({ success: false, message: error.message === "INSUFFICIENT_COIN"  });
+    res.status(400).json({ success: false, message: error.message === "INSUFFICIENT_COIN" ? "เงิน COIN ไม่พอ" : "เกิดข้อผิดพลาด" });
   }
 });
 
@@ -567,109 +567,6 @@ cleanupOldFeeds();
 app.get("/ping", (req, res) => {
   res.status(200).send("Server is awake!");
 });
-   // ==========================================
-// API NEW: CLAIM CHASER (WLD -> CHASER SWAP)
-// ==========================================
-app.post("/api/claim-chaser", async (req, res) => {
-  console.log("---- 🛡️ SECURE CHASER SWAP START ----");
-  try {
-    const { userId, wldTxHash, amountWld } = req.body;
-
-    // 1. ตรวจสอบข้อมูลเบื้องต้น
-    if (!userId || !wldTxHash || !amountWld) {
-      return res.status(400).json({ success: false, message: "ข้อมูลไม่ครบถ้วน" });
-    }
-
-    // 2. [ON-CHAIN VERIFY] วิ่งไปส่องบล็อกเชนก่อนเลยว่าโอนจริงไหม
-    const tx = await provider.getTransaction(wldTxHash);
-    if (!tx) {
-      return res.status(400).json({ success: false, message: "ไม่พบรายการธุรกรรมบนบล็อกเชน" });
-    }
-
-    // ตรวจสอบว่าโอนเข้ากระเป๋ากองกลาง (WLD_POOL_WALLET) จริงไหม
-    const isToVault = tx.to.toLowerCase() === process.env.WLD_POOL_WALLET.toLowerCase();
-    if (!isToVault) {
-      return res.status(400).json({ success: false, message: "รายการโอนนี้ไม่ได้ส่งมาที่กระเป๋ากองกลาง" });
-    }
-
-    // ตรวจสอบยอดเงินให้ตรงกับที่แจ้งมา (แปลง Wei เป็น Number)
-    const actualWldAmount = Number(ethers.formatUnits(tx.value, 18));
-    if (actualWldAmount !== Number(amountWld)) {
-      return res.status(400).json({ success: false, message: "ยอดโอนในบล็อกเชนไม่ตรงกับที่ระบุ" });
-    }
-
-    // 3. [DATABASE & SIGNING] ใช้ Transaction ของ Firestore เพื่อกันการยิงซ้ำ
-    const swapRef = db.collection("chaser_swaps").doc(wldTxHash);
-    const userRef = db.collection("users").doc(userId);
-
-    const claimData = await db.runTransaction(async (t) => {
-      // 🛡️ กันการยิง TxHash ซ้ำ (Double Spend)
-      const swapDoc = await t.get(swapRef);
-      if (swapDoc.exists) {
-        throw new Error("TX_HASH_ALREADY_USED");
-      }
-
-      const userDoc = await t.get(userRef);
-      if (!userDoc.exists) {
-        throw new Error("USER_NOT_FOUND");
-      }
-
-      const userData = userDoc.data();
-      const userWallet = userData.walletAddress;
-
-      // 🧮 คำนวณยอด CHASER (Rate 10,000 + Bonus 2%)
-      const chaserRate = Number(process.env.CHASER_RATE) || 10000;
-      const chaserBonus = Number(process.env.CHASER_BONUS) || 1.02;
-      const finalChaserAmount = Number(amountWld) * chaserRate * chaserBonus;
-
-      // เตรียมข้อมูลสำหรับ Signature
-      const amountChaserWei = ethers.parseUnits(finalChaserAmount.toFixed(0), 18);
-      const nonce = Date.now();
-      const deadline = Math.floor(Date.now() / 1000) + (60 * 10); // อายุ 10 นาที
-
-      // 📝 บันทึกลง Firebase (สถานะ PENDING)
-      t.set(swapRef, {
-        userId: userId,
-        userWallet: userWallet,
-        wldAmount: actualWldAmount,
-        chaserAmount: finalChaserAmount,
-        wldTxHash: wldTxHash,
-        status: "PENDING",
-        nonce: nonce,
-        timestamp: admin.firestore.FieldValue.serverTimestamp()
-      });
-
-      // 🖋️ สร้าง Signature
-      const packedData = ethers.solidityPackedKeccak256(
-        ["address", "uint256", "uint256", "uint256", "address"],
-        [userWallet, amountChaserWei, nonce, deadline, process.env.CHASER_VAULT_ADDRESS]
-      );
-      const signature = await signer.signMessage(ethers.getBytes(packedData));
-
-      return {
-        amount: amountChaserWei.toString(),
-        nonce: nonce,
-        deadline: deadline,
-        signature: signature
-      };
-    });
-
-    // 4. ส่ง Signature กลับไปให้หน้าบ้าน
-    console.log(`✅ [Chaser Swap Approved] User: ${userId} | WLD: ${amountWld}`);
-    res.json({
-      success: true,
-      claimData: claimData
-    });
-
-  } catch (error) {
-    console.error("❌ Claim Chaser Error:", error.message);
-    let msg = "เกิดข้อผิดพลาดในการตรวจสอบ";
-    if (error.message === "TX_HASH_ALREADY_USED") msg = "ใบเสร็จนี้ถูกใช้งานไปแล้ว";
-    else if (error.message === "USER_NOT_FOUND") msg = "ไม่พบข้อมูลผู้เล่น";
-    res.status(400).json({ success: false, message: msg });
-  }
-});
-
 
 
 const PORT = process.env.PORT || 3000;
