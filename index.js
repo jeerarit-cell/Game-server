@@ -625,6 +625,74 @@ app.post("/api/claim-chaser", async (req, res) => {
     res.status(400).json({ success: false, message: error.message });
   }
 });
+// ==========================================
+// API เฉพาะ: SWAP WLD -> CHASER (แยกจากการซื้อ Coin ปกติ)
+// ==========================================
+app.post("/api/claim-chaser", async (req, res) => {
+  try {
+    const { userId, wldTxHash, amountWld } = req.body;
+
+    // 1. เช็คข้อมูลเบื้องต้น (ไม่ต้องเช็ค MIN_SELL_COIN เพราะนี่คือการ Swap)
+    if (!userId || !wldTxHash || !amountWld) {
+      return res.status(400).json({ success: false, message: "ข้อมูลไม่ครบถ้วน (Swap)" });
+    }
+
+    // 2. ตรวจสอบ Transaction บน Blockchain จริงๆ
+    const tx = await provider.getTransaction(wldTxHash);
+    if (!tx) return res.status(400).json({ success: false, message: "ไม่พบรายการบนบล็อกเชน" });
+
+    // 3. แยกเงิน: เช็คว่าโอนเข้ากระเป๋า "กองกลาง Chaser" จริงไหม
+    // (ใช้ค่าแยกจากระบบเกมปกติ เพื่อไม่ให้ปนกัน)
+    const isToChaserPool = tx.to.toLowerCase() === process.env.WLD_POOL_WALLET.toLowerCase();
+    if (!isToChaserPool) return res.status(400).json({ success: false, message: "เงินไม่ได้โอนเข้าพูล Swap" });
+
+    // 4. บันทึกและสร้าง Signature (ใช้เรท 10000:1 + 2% ตามที่คุณตั้งไว้)
+    const swapRef = db.collection("chaser_swaps").doc(wldTxHash);
+    const userRef = db.collection("users").doc(userId);
+
+    const claimData = await db.runTransaction(async (t) => {
+      const swapDoc = await t.get(swapRef);
+      if (swapDoc.exists) throw new Error("ใบเสร็จนี้ถูกใช้เคลมไปแล้ว");
+
+      const userDoc = await t.get(userRef);
+      if (!userDoc.exists) throw new Error("ไม่พบรายชื่อผู้เล่น");
+
+      const userWallet = userDoc.data().walletAddress;
+      
+      // คำนวณเงินรางวัล (ตรงนี้แหละที่แยกจาก SELL_RATE ของเกม)
+      const chaserAmount = Number(amountWld) * 10000 * 1.02; 
+      const amountWei = ethers.parseUnits(chaserAmount.toFixed(0), 18);
+      
+      const nonce = Date.now();
+      const deadline = Math.floor(Date.now() / 1000) + (60 * 10); // 10 นาที
+
+      // บันทึกประวัติลงคอลเลกชันใหม่ 'chaser_swaps' ไม่ให้ปนกับ 'transactions' เดิม
+      t.set(swapRef, {
+        userId,
+        userWallet,
+        wldAmount: amountWld,
+        chaserAmount: chaserAmount,
+        timestamp: admin.firestore.FieldValue.serverTimestamp()
+      });
+
+      // สร้าง Signature
+      const packedData = ethers.solidityPackedKeccak256(
+        ["address", "uint256", "uint256", "uint256", "address"],
+        [userWallet, amountWei, nonce, deadline, process.env.CHASER_VAULT_ADDRESS]
+      );
+      const signature = await signer.signMessage(ethers.getBytes(packedData));
+
+      return { amount: amountWei.toString(), nonce, deadline, signature };
+    });
+
+    res.json({ success: true, claimData });
+
+  } catch (error) {
+    console.error("❌ Swap Error:", error.message);
+    res.status(400).json({ success: false, message: error.message });
+  }
+});
+
 
 
 
