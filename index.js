@@ -579,8 +579,8 @@ app.post("/api/get-swap-signature", async (req, res) => {
     const swapAmount = Number(amountCoin);
 
     // ใช้ค่าจาก .env ที่คุณกำหนด
-    const RATE = Number(process.env.CHASER_RATE) || 10000;
-    const BONUS = Number(process.env.CHASER_BONUS) || 0.02;
+    const RATE = Number(process.env.CHASER_RATE) || 10;
+    const BONUS = Number(process.env.CHASER_BONUS) || 1.02;
     const TOKEN_ADDR = process.env.CHASER_TOKEN_ADDRESS;
     const VAULT_ADDR = process.env.CONTRACT_ADDRESS;
 
