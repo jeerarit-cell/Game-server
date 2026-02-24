@@ -213,36 +213,85 @@ app.post("/api/withdraw-success", async (req, res) => {
 });
 
 // ==========================================
-// API NEW: CLAIM CHASER (ระบบใหม่ - No Limit)
+// API NEW: CLAIM CHASER (Fixed & English Only)
 // ==========================================
 app.post("/api/claim-chaser", async (req, res) => {
+  console.log("---- 🛡️ SECURE CHASER SWAP START ----");
   try {
     const { userId, wldTxHash, amountWld } = req.body;
+
+    if (!userId || !wldTxHash || !amountWld) {
+      return res.status(400).json({ success: false, message: "Required information is missing" });
+    }
+
     const tx = await provider.getTransaction(wldTxHash);
-    if (!tx || tx.to.toLowerCase() !== process.env.WLD_POOL_WALLET.toLowerCase()) throw new Error("INVALID_TX");
+    if (!tx) {
+      return res.status(400).json({ success: false, message: "Transaction hash not found on blockchain" });
+    }
+
+    const isToVault = tx.to.toLowerCase() === process.env.WLD_POOL_WALLET.toLowerCase();
+    if (!isToVault) {
+      return res.status(400).json({ success: false, message: "Invalid transaction destination" });
+    }
+
+    const actualWldAmount = Number(ethers.formatUnits(tx.value, 18));
+    if (actualWldAmount !== Number(amountWld)) {
+      return res.status(400).json({ success: false, message: "Transfer amount mismatch" });
+    }
 
     const swapRef = db.collection("chaser_swaps").doc(wldTxHash);
     const userRef = db.collection("users").doc(userId);
 
     const claimData = await db.runTransaction(async (t) => {
-      if ((await t.get(swapRef)).exists) throw new Error("TX_USED");
-      const userData = (await t.get(userRef)).data();
-      
+      const swapDoc = await t.get(swapRef);
+      if (swapDoc.exists) throw new Error("TX_HASH_ALREADY_USED");
+
+      const userDoc = await t.get(userRef);
+      if (!userDoc.exists) throw new Error("USER_NOT_FOUND");
+
+      const userData = userDoc.data();
+      const userWallet = userData.walletAddress;
+
       const chaserRate = Number(process.env.CHASER_RATE) || 10000;
-      const finalAmount = Number(amountWld) * chaserRate * 1.02;
-      const amountWei = ethers.parseUnits(finalAmount.toFixed(0), 18);
+      const chaserBonus = Number(process.env.CHASER_BONUS) || 1.02;
+      const finalChaserAmount = Number(amountWld) * chaserRate * chaserBonus;
+
+      const amountChaserWei = ethers.parseUnits(finalChaserAmount.toFixed(0), 18);
       const nonce = Date.now();
       const deadline = Math.floor(Date.now() / 1000) + 600;
 
-      t.set(swapRef, { userId, source: "CHASER_SWAP", wldAmount: Number(amountWld), status: "PENDING", timestamp: admin.firestore.FieldValue.serverTimestamp() });
-      
-      const packedData = ethers.solidityPackedKeccak256(["address", "uint256", "uint256", "uint256", "address"], [userData.walletAddress, amountWei, nonce, deadline, process.env.CHASER_VAULT_ADDRESS]);
+      t.set(swapRef, {
+        userId,
+        userWallet,
+        source: "CHASER_SWAP",
+        wldAmount: actualWldAmount,
+        chaserAmount: finalChaserAmount,
+        wldTxHash,
+        status: "PENDING",
+        nonce,
+        timestamp: admin.firestore.FieldValue.serverTimestamp()
+      });
+
+      const packedData = ethers.solidityPackedKeccak256(
+        ["address", "uint256", "uint256", "uint256", "address"],
+        [userWallet, amountChaserWei, nonce, deadline, process.env.CHASER_VAULT_ADDRESS]
+      );
       const signature = await signer.signMessage(ethers.getBytes(packedData));
-      return { amount: amountWei.toString(), nonce, deadline, signature };
+
+      return { amount: amountChaserWei.toString(), nonce, deadline, signature };
     });
+
     res.json({ success: true, claimData });
-  } catch (error) { res.status(400).json({ success: false, message: error.message }); }
-});
+
+  } catch (error) {
+    console.error("❌ Claim Chaser Error:", error.message);
+    let msg = "Verification failed";
+    if (error.message === "TX_HASH_ALREADY_USED") msg = "Transaction already used";
+    else if (error.message === "USER_NOT_FOUND") msg = "User not found";
+    res.status(400).json({ success: false, message: msg });
+  }
+}); // ปิด API ครั้งเดียวจบ
+
 
 // ==========================================
 // OTHER: FEED & CLEANUP & PING
