@@ -568,107 +568,117 @@ app.get("/ping", (req, res) => {
   res.status(200).send("Server is awake!");
 });
 
-// =============================================================
-// CHASER REWARD SYSTEM - API ENDPOINTS
-// =============================================================
-
-// 1. API สำหรับขอใบอนุญาต (ยังไม่หักเงิน)
-app.post("/api/get-swap-signature", async (req, res) => {
+// ==========================================
+// API 6: CHASER SWAP (สร้างลายเซ็น - ยังไม่หักเงิน)
+// ==========================================
+app.post("/api/get-chaser-signature", async (req, res) => {
+  console.log("---- CHASER SWAP REQUEST ----");
   try {
     const { userId, amountCoin } = req.body;
+    if (!userId || !amountCoin) return res.status(400).json({ success: false, message: "ข้อมูลไม่ครบถ้วน" });
+
     const swapAmount = Number(amountCoin);
+    const CHASER_MIN = 100; // ขั้นต่ำตามที่ตกลงกันไว้
+    if (swapAmount < CHASER_MIN) return res.status(400).json({ success: false, message: `ขั้นต่ำคือ ${CHASER_MIN} COIN` });
 
-    // ใช้ค่าจาก .env ที่คุณกำหนด
-    const RATE = Number(process.env.CHASER_RATE) || 10;
-    const BONUS = Number(process.env.CHASER_BONUS) || 1.02;
-    const TOKEN_ADDR = process.env.CHASER_TOKEN_ADDRESS;
-    const VAULT_ADDR = process.env.CONTRACT_ADDRESS;
-
-    if (swapAmount < 100) throw new Error("ขั้นต่ำคือ 100 COIN");
-
-    const userDoc = await db.collection("users").doc(userId).get();
-    if (!userDoc.exists) throw new Error("ไม่พบข้อมูลผู้เล่น");
+    const userRef = db.collection("users").doc(userId);
+    const doc = await userRef.get();
     
-    const userData = userDoc.data();
-    if (Number(userData.coin) < swapAmount) throw new Error("ยอด COIN ไม่เพียงพอ");
-
-    // --- สูตรคำนวณ: (ยอด Coin * Rate) + โบนัส ---
-    const baseChaser = swapAmount * RATE;
-    const totalChaser = Math.floor(baseChaser * (1 + BONUS));
+    if (!doc.exists) throw new Error("USER_NOT_FOUND");
     
-    // แปลงเป็นหน่วย Wei (18 หลัก)
+    const userData = doc.data();
+    const currentBalance = Number(userData.coin) || 0;
+
+    if (currentBalance < swapAmount) throw new Error("INSUFFICIENT_FUNDS");
+
+    // ดึงค่าคอนฟิกจาก .env
+    const CH_RATE = Number(process.env.CHASER_RATE) || 10;
+    const CH_BONUS = Number(process.env.CHASER_BONUS) || 1.02;
+    const CH_TOKEN = process.env.CHASER_TOKEN_ADDRESS;
+    const CH_VAULT = process.env.CHASER_VAULT_ADDRESS;
+
+    // คำนวณยอด Chaser (1 Coin * 10 * 1.02)
+    const totalChaser = Math.floor(swapAmount * CH_RATE * CH_BONUS);
     const amountWei = ethers.parseUnits(totalChaser.toString(), 18);
     
-    const nonce = Date.now(); // เลขใบเสร็จ/Nonce
+    const nonce = Date.now(); 
     const deadline = Math.floor(Date.now() / 1000) + (60 * 10); // หมดอายุใน 10 นาที
 
-    // --- สร้าง Digital Signature ---
+    // สร้าง Signature (โครงสร้างตาม Smart Contract ของ Chaser)
     const packedData = ethers.solidityPackedKeccak256(
       ["address", "uint256", "uint256", "uint256", "address"],
-      [TOKEN_ADDR, amountWei, nonce, deadline, VAULT_ADDR]
+      [CH_TOKEN, amountWei, nonce, deadline, CH_VAULT]
     );
-    
-    // ใช้ Private Key ของ Vault ในการเซ็น (ต้องประกาศ signer ไว้ด้านบนของไฟล์)
-    const signature = await signer.signMessage(ethers.getBytes(packedData));
-
-    console.log(`📌 Signature Created for ${userId}: ${totalChaser} Chaser`);
+    const vaultSignature = await signer.signMessage(ethers.getBytes(packedData));
 
     res.json({
       success: true,
-      claimData: {
-        tokenAddress: TOKEN_ADDR,
-        amount: amountWei.toString(),
-        nonce: nonce,
+      claimData: { 
+        tokenAddress: CH_TOKEN,
+        amount: amountWei.toString(), 
+        nonce: nonce, 
         deadline: deadline,
-        signature: signature,
-        vaultAddress: VAULT_ADDR
+        signature: vaultSignature, 
+        vaultAddress: CH_VAULT 
       }
     });
   } catch (error) {
-    console.error("❌ Signature Error:", error.message);
-    res.status(400).json({ success: false, message: error.message });
+    console.error("❌ Chaser Signature Error:", error.message);
+    let clientMessage = "เกิดข้อผิดพลาดที่เซิร์ฟเวอร์";
+    if (error.message === "USER_NOT_FOUND") clientMessage = "ไม่พบข้อมูลผู้เล่น";
+    else if (error.message === "INSUFFICIENT_FUNDS") clientMessage = "ยอด Coin ไม่เพียงพอ";
+    res.status(400).json({ success: false, message: clientMessage });
   }
 });
 
-// 2. API สำหรับยืนยันการหักเงิน (เมื่อ Blockchain สำเร็จแล้ว)
-app.post("/api/swap-success", async (req, res) => {
+// ==========================================
+// API 7: CHASER SUCCESS (หักเงินจริงหลังเคลมสำเร็จ)
+// ==========================================
+app.post("/api/chaser-success", async (req, res) => {
   try {
     const { userId, amountCoin, nonce } = req.body;
+    if (!userId || !amountCoin || !nonce) return res.status(400).json({ success: false });
 
-    // เช็คว่า Nonce นี้เคยใช้ไปหรือยัง (กันโกง)
-    const nonceRef = db.collection("used_nonces").doc(nonce.toString());
-    const nonceDoc = await nonceRef.get();
-    if (nonceDoc.exists) throw new Error("รายการนี้ถูกดำเนินการไปแล้ว");
-
+    const requestAmount = Number(amountCoin);
     const userRef = db.collection("users").doc(userId);
-    
-    const result = await db.runTransaction(async (t) => {
+    const txRef = db.collection("transactions").doc(String(nonce));
+
+    const newBalance = await db.runTransaction(async (t) => {
+      const txDoc = await t.get(txRef);
+      if (txDoc.exists) throw new Error("ALREADY_DEDUCTED");
+
       const userDoc = await t.get(userRef);
       if (!userDoc.exists) throw new Error("USER_NOT_FOUND");
-      
-      const currentCoin = Number(userDoc.data().coin);
-      const newBalance = currentCoin - Number(amountCoin);
-      
-      if (newBalance < 0) throw new Error("ยอดเงินไม่เพียงพอหลังตรวจสอบ");
 
-      // หักเงิน และ บันทึก Nonce ว่าใช้แล้ว
-      t.update(userRef, { coin: newBalance });
-      t.set(nonceRef, { 
-        usedAt: admin.firestore.FieldValue.serverTimestamp(),
-        userId: userId,
-        amountCoin: amountCoin
+      const realBalance = Number(userDoc.data().coin) || 0;
+      if (realBalance < requestAmount) throw new Error("INSUFFICIENT_FUNDS");
+
+      const updatedBalance = realBalance - requestAmount;
+
+      // หักเงินและบันทึกประวัติ
+      t.update(userRef, { 
+        coin: updatedBalance, 
+        lastChaserSwap: new Date().toISOString() 
       });
-      
-      return { newBalance };
+
+      t.set(txRef, {
+        userId: userId,
+        type: "CHASER_SWAP",
+        amountCoin: requestAmount,
+        timestamp: admin.firestore.FieldValue.serverTimestamp()
+      });
+
+      return updatedBalance; 
     });
 
-    console.log(`✅ [Swap Complete] User: ${userId} | Balance: ${result.newBalance}`);
-    res.json({ success: true, newBalance: result.newBalance });
+    console.log(`✅ [Chaser Success] User: ${userId} | Used: ${requestAmount} Coins | Nonce: ${nonce}`);
+    res.json({ success: true, newBalance: newBalance });
   } catch (error) {
-    console.error("❌ Swap Success Error:", error.message);
+    console.error("❌ Chaser Sync Error:", error.message);
     res.status(400).json({ success: false, message: error.message });
   }
 });
+
 
 
 
