@@ -568,77 +568,108 @@ app.get("/ping", (req, res) => {
   res.status(200).send("Server is awake!");
 });
 
+// =============================================================
+// CHASER REWARD SYSTEM - API ENDPOINTS
+// =============================================================
+
+// 1. API สำหรับขอใบอนุญาต (ยังไม่หักเงิน)
 app.post("/api/get-swap-signature", async (req, res) => {
   try {
     const { userId, amountCoin } = req.body;
     const swapAmount = Number(amountCoin);
 
-    if (swapAmount < 100) throw new Error("MINIMUM_100");
+    // ใช้ค่าจาก .env ที่คุณกำหนด
+    const RATE = Number(process.env.CHASER_RATE) || 10000;
+    const BONUS = Number(process.env.CHASER_BONUS) || 0.02;
+    const TOKEN_ADDR = process.env.CHASER_TOKEN_ADDRESS;
+    const VAULT_ADDR = process.env.CONTRACT_ADDRESS;
+
+    if (swapAmount < 100) throw new Error("ขั้นต่ำคือ 100 COIN");
 
     const userDoc = await db.collection("users").doc(userId).get();
-    if (!userDoc.exists) throw new Error("USER_NOT_FOUND");
+    if (!userDoc.exists) throw new Error("ไม่พบข้อมูลผู้เล่น");
     
     const userData = userDoc.data();
-    if (userData.coin < swapAmount) throw new Error("INSUFFICIENT_FUNDS");
+    if (Number(userData.coin) < swapAmount) throw new Error("ยอด COIN ไม่เพียงพอ");
 
-    // คำนวณยอด Chaser + 2%
-    const totalChaser = Math.floor(swapAmount * 10000 * 1.02); // ตามเรทหน้าบ้าน 1:10000
+    // --- สูตรคำนวณ: (ยอด Coin * Rate) + โบนัส ---
+    const baseChaser = swapAmount * RATE;
+    const totalChaser = Math.floor(baseChaser * (1 + BONUS));
+    
+    // แปลงเป็นหน่วย Wei (18 หลัก)
     const amountWei = ethers.parseUnits(totalChaser.toString(), 18);
     
-    const nonce = Date.now(); // เลขใบเสร็จ
-    const deadline = Math.floor(Date.now() / 1000) + (60 * 10); // 10 นาที
+    const nonce = Date.now(); // เลขใบเสร็จ/Nonce
+    const deadline = Math.floor(Date.now() / 1000) + (60 * 10); // หมดอายุใน 10 นาที
 
-    // สร้าง Signature (ใช้คีย์จาก Vault)
+    // --- สร้าง Digital Signature ---
     const packedData = ethers.solidityPackedKeccak256(
       ["address", "uint256", "uint256", "uint256", "address"],
-      [process.env.CHASER_TOKEN, amountWei, nonce, deadline, process.env.CHASER_VAULT_ADDRESS]
+      [TOKEN_ADDR, amountWei, nonce, deadline, VAULT_ADDR]
     );
+    
+    // ใช้ Private Key ของ Vault ในการเซ็น (ต้องประกาศ signer ไว้ด้านบนของไฟล์)
     const signature = await signer.signMessage(ethers.getBytes(packedData));
+
+    console.log(`📌 Signature Created for ${userId}: ${totalChaser} Chaser`);
 
     res.json({
       success: true,
       claimData: {
-        tokenAddress: process.env.CHASER_TOKEN,
+        tokenAddress: TOKEN_ADDR,
         amount: amountWei.toString(),
-        nonce,
-        deadline,
-        signature,
-        vaultAddress: process.env.CHASER_VAULT_ADDRESS
+        nonce: nonce,
+        deadline: deadline,
+        signature: signature,
+        vaultAddress: VAULT_ADDR
       }
     });
   } catch (error) {
+    console.error("❌ Signature Error:", error.message);
     res.status(400).json({ success: false, message: error.message });
   }
 });
-//////
 
-  app.post("/api/swap-success", async (req, res) => {
+// 2. API สำหรับยืนยันการหักเงิน (เมื่อ Blockchain สำเร็จแล้ว)
+app.post("/api/swap-success", async (req, res) => {
   try {
     const { userId, amountCoin, nonce } = req.body;
 
-    // ตรวจสอบว่า Nonce นี้เคยใช้หักเงินไปหรือยัง (ป้องกันการส่งซ้ำ)
+    // เช็คว่า Nonce นี้เคยใช้ไปหรือยัง (กันโกง)
     const nonceRef = db.collection("used_nonces").doc(nonce.toString());
     const nonceDoc = await nonceRef.get();
-    if (nonceDoc.exists) throw new Error("NONCE_ALREADY_USED");
+    if (nonceDoc.exists) throw new Error("รายการนี้ถูกดำเนินการไปแล้ว");
 
     const userRef = db.collection("users").doc(userId);
     
     const result = await db.runTransaction(async (t) => {
       const userDoc = await t.get(userRef);
-      const currentCoin = userDoc.data().coin;
+      if (!userDoc.exists) throw new Error("USER_NOT_FOUND");
       
-      const newBalance = currentCoin - amountCoin;
+      const currentCoin = Number(userDoc.data().coin);
+      const newBalance = currentCoin - Number(amountCoin);
+      
+      if (newBalance < 0) throw new Error("ยอดเงินไม่เพียงพอหลังตรวจสอบ");
+
+      // หักเงิน และ บันทึก Nonce ว่าใช้แล้ว
       t.update(userRef, { coin: newBalance });
-      t.set(nonceRef, { usedAt: admin.firestore.FieldValue.serverTimestamp() }); // บล็อก Nonce
+      t.set(nonceRef, { 
+        usedAt: admin.firestore.FieldValue.serverTimestamp(),
+        userId: userId,
+        amountCoin: amountCoin
+      });
       
       return { newBalance };
     });
 
+    console.log(`✅ [Swap Complete] User: ${userId} | Balance: ${result.newBalance}`);
     res.json({ success: true, newBalance: result.newBalance });
   } catch (error) {
+    console.error("❌ Swap Success Error:", error.message);
     res.status(400).json({ success: false, message: error.message });
   }
 });
+
 
 
 const PORT = process.env.PORT || 3000;
