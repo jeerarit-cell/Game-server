@@ -567,131 +567,98 @@ cleanupOldFeeds();
 app.get("/ping", (req, res) => {
   res.status(200).send("Server is awake!");
 });
-// ==========================================
-// API NEW: CLAIM CHASER (เติมกลับเข้าไปเพื่อให้ระบบ Swap ทำงานได้)
-// ==========================================
-app.post("/api/claim-chaser", async (req, res) => {
-  try {
-    const { userId, wldTxHash, amountWld } = req.body;
 
-    // 1. ตรวจสอบข้อมูลเบื้องต้น
-    if (!userId || !wldTxHash || !amountWld) {
-      return res.status(400).json({ success: false, message: "ข้อมูลไม่ครบถ้วน" });
+// =============================================================
+// API: SWAP COIN TO CHASER (เลียนแบบ Logic ของ Sell Game)
+// =============================================================
+app.post("/api/swap-game-coin", async (req, res) => {
+  try {
+    const { userId, amountCoin } = req.body; // รับจำนวน Coin ที่ผู้เล่นต้องการใช้แลก
+
+    // 1. ตรวจสอบเงื่อนไขขั้นต่ำ (100 Coin)
+    const swapAmount = Number(amountCoin);
+    if (!userId || isNaN(swapAmount) || swapAmount < 100) {
+      return res.status(400).json({ success: false, message: "ขั้นต่ำในการแลกคือ 100 COIN" });
     }
 
-    // 2. เช็คบน Blockchain ว่าโอนจริงไหม
-    const tx = await provider.getTransaction(wldTxHash);
-    if (!tx) return res.status(400).json({ success: false, message: "ไม่พบรายการบนบล็อกเชน" });
-
-    // เช็คว่าโอนเข้ากระเป๋ากองกลางจริงไหม (ต้องตั้งค่า WLD_POOL_WALLET ใน .env)
-    const isToVault = tx.to.toLowerCase() === process.env.WLD_POOL_WALLET.toLowerCase();
-    if (!isToVault) return res.status(400).json({ success: false, message: "โอนผิดกระเป๋า" });
-
-    // 3. ป้องกันการใช้ซ้ำ & สร้าง Signature
-    const swapRef = db.collection("chaser_swaps").doc(wldTxHash);
     const userRef = db.collection("users").doc(userId);
+    const nonce = Date.now(); // ใช้ Timestamp เป็น Nonce และเลขใบเสร็จ
+    const txRef = db.collection("transactions").doc(`SWAP_${nonce}`); // บันทึกในคอลเลกชันเดียวกับระบบเติมเงิน/ถอนเงิน
 
-    const claimData = await db.runTransaction(async (t) => {
-      const swapDoc = await t.get(swapRef);
-      if (swapDoc.exists) throw new Error("TX_USED");
-
+    const result = await db.runTransaction(async (t) => {
+      // --- ค้นหาข้อมูลผู้เล่น ---
       const userDoc = await t.get(userRef);
       if (!userDoc.exists) throw new Error("USER_NOT_FOUND");
 
-      const chaserRate = 10000;
-      const chaserBonus = 1.02;
-      const finalChaserAmount = Number(amountWld) * chaserRate * chaserBonus;
+      const userData = userDoc.data();
+      const currentCoin = Number(userData.coin) || 0;
+      const userWallet = userData.walletAddress;
 
-      const amountChaserWei = ethers.parseUnits(finalChaserAmount.toFixed(0), 18);
-      const nonce = Date.now();
-      const deadline = Math.floor(Date.now() / 1000) + (60 * 10);
+      if (!userWallet) throw new Error("WALLET_NOT_FOUND");
+      if (currentCoin < swapAmount) throw new Error("INSUFFICIENT_FUNDS");
 
-      // บันทึกกันโกง
-      t.set(swapRef, { userId, wldAmount: amountWld, status: "PENDING", timestamp: admin.firestore.FieldValue.serverTimestamp() });
+      // --- 2. คำนวณยอด Chaser + โบนัส 2% ---
+      // เรท: 1 Coin = 10 Chaser
+      const baseChaser = swapAmount * 10;
+      const bonus = baseChaser * 0.02; // โบนัส 2%
+      const totalChaser = Math.floor(baseChaser + bonus); // ปัดเศษทศนิยมทิ้ง
 
-      // สร้างลายเซ็น (ใช้อ้างอิงจาก VAULT และ TOKEN ใน .env)
-      const packedData = ethers.solidityPackedKeccak256(
-        ["address", "uint256", "uint256", "uint256", "address"],
-        [userDoc.data().walletAddress, amountChaserWei, nonce, deadline, process.env.CHASER_VAULT_ADDRESS]
-      );
-      const signature = await signer.signMessage(ethers.getBytes(packedData));
+      // แปลงเป็นหน่วย Wei (18 หลัก) สำหรับ Smart Contract
+      const amountWei = ethers.parseUnits(totalChaser.toString(), 18);
 
-      return { amount: amountChaserWei.toString(), nonce, deadline, signature };
-    });
+      // --- 3. หักเงินจริง & บันทึกประวัติ (เหมือน Sell Game) ---
+      const updatedBalance = currentCoin - swapAmount;
+      t.update(userRef, { coin: updatedBalance });
 
-    res.json({ success: true, claimData });
-  } catch (error) {
-    console.error("Swap Error:", error.message);
-    res.status(400).json({ success: false, message: error.message });
-  }
-});
-// ==========================================
-// API เฉพาะ: SWAP WLD -> CHASER (แยกจากการซื้อ Coin ปกติ)
-// ==========================================
-app.post("/api/claim-chaser", async (req, res) => {
-  try {
-    const { userId, wldTxHash, amountWld } = req.body;
-
-    // 1. เช็คข้อมูลเบื้องต้น (ไม่ต้องเช็ค MIN_SELL_COIN เพราะนี่คือการ Swap)
-    if (!userId || !wldTxHash || !amountWld) {
-      return res.status(400).json({ success: false, message: "ข้อมูลไม่ครบถ้วน (Swap)" });
-    }
-
-    // 2. ตรวจสอบ Transaction บน Blockchain จริงๆ
-    const tx = await provider.getTransaction(wldTxHash);
-    if (!tx) return res.status(400).json({ success: false, message: "ไม่พบรายการบนบล็อกเชน" });
-
-    // 3. แยกเงิน: เช็คว่าโอนเข้ากระเป๋า "กองกลาง Chaser" จริงไหม
-    // (ใช้ค่าแยกจากระบบเกมปกติ เพื่อไม่ให้ปนกัน)
-    const isToChaserPool = tx.to.toLowerCase() === process.env.WLD_POOL_WALLET.toLowerCase();
-    if (!isToChaserPool) return res.status(400).json({ success: false, message: "เงินไม่ได้โอนเข้าพูล Swap" });
-
-    // 4. บันทึกและสร้าง Signature (ใช้เรท 10000:1 + 2% ตามที่คุณตั้งไว้)
-    const swapRef = db.collection("chaser_swaps").doc(wldTxHash);
-    const userRef = db.collection("users").doc(userId);
-
-    const claimData = await db.runTransaction(async (t) => {
-      const swapDoc = await t.get(swapRef);
-      if (swapDoc.exists) throw new Error("ใบเสร็จนี้ถูกใช้เคลมไปแล้ว");
-
-      const userDoc = await t.get(userRef);
-      if (!userDoc.exists) throw new Error("ไม่พบรายชื่อผู้เล่น");
-
-      const userWallet = userDoc.data().walletAddress;
-      
-      // คำนวณเงินรางวัล (ตรงนี้แหละที่แยกจาก SELL_RATE ของเกม)
-      const chaserAmount = Number(amountWld) * 10000 * 1.02; 
-      const amountWei = ethers.parseUnits(chaserAmount.toFixed(0), 18);
-      
-      const nonce = Date.now();
-      const deadline = Math.floor(Date.now() / 1000) + (60 * 10); // 10 นาที
-
-      // บันทึกประวัติลงคอลเลกชันใหม่ 'chaser_swaps' ไม่ให้ปนกับ 'transactions' เดิม
-      t.set(swapRef, {
-        userId,
-        userWallet,
-        wldAmount: amountWld,
-        chaserAmount: chaserAmount,
+      // บันทึกลงสมุดบัญชี (transactions) เพื่อให้ตรวจสอบยอดเงินย้อนหลังได้ง่าย
+      t.set(txRef, {
+        userId: userId,
+        type: "SWAP_CHASER",
+        amountCoin: swapAmount, // หักออกเท่าไหร่
+        chaserReceived: totalChaser, // ได้รับ Chaser เท่าไหร่
+        wallet: userWallet,
         timestamp: admin.firestore.FieldValue.serverTimestamp()
       });
 
-      // สร้าง Signature
+      // --- 4. สร้าง Signature ให้หน้าบ้านนำไป Claim ---
+      const deadline = Math.floor(Date.now() / 1000) + (60 * 10); // หมดอายุใน 10 นาที
+      const CHASER_TOKEN = process.env.CHASER_TOKEN;
+      const VAULT_ADDRESS = process.env.CHASER_VAULT_ADDRESS;
+
+      // แพ็คข้อมูลตามลำดับที่ ABI ต้องการ
       const packedData = ethers.solidityPackedKeccak256(
         ["address", "uint256", "uint256", "uint256", "address"],
-        [userWallet, amountWei, nonce, deadline, process.env.CHASER_VAULT_ADDRESS]
+        [CHASER_TOKEN, amountWei, nonce, deadline, VAULT_ADDRESS]
       );
       const signature = await signer.signMessage(ethers.getBytes(packedData));
 
-      return { amount: amountWei.toString(), nonce, deadline, signature };
+      return {
+        newBalance: updatedBalance,
+        claimData: {
+          tokenAddress: CHASER_TOKEN,
+          amount: amountWei.toString(),
+          nonce: nonce,
+          deadline: deadline,
+          signature: signature,
+          vaultAddress: VAULT_ADDRESS
+        }
+      };
     });
 
-    res.json({ success: true, claimData });
+    console.log(`✅ [Swap Success] User: ${userId} | Used: ${swapAmount} Coin | Got: ${result.claimData.amount} (Wei)`);
+    res.json({ success: true, ...result });
 
   } catch (error) {
     console.error("❌ Swap Error:", error.message);
-    res.status(400).json({ success: false, message: error.message });
+    let clientMsg = "เกิดข้อผิดพลาดในการแลกเหรียญ";
+    if (error.message === "USER_NOT_FOUND") clientMsg = "ไม่พบข้อมูลผู้เล่น";
+    else if (error.message === "WALLET_NOT_FOUND") clientMsg = "ไอดีนี้ยังไม่ได้ผูกกระเป๋า";
+    else if (error.message === "INSUFFICIENT_FUNDS") clientMsg = "ยอด COIN ไม่เพียงพอ";
+    
+    res.status(400).json({ success: false, message: clientMsg });
   }
 });
+
 
 
 
