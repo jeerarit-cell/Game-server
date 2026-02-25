@@ -599,21 +599,18 @@ app.post("/api/get-chaser-signature", async (req, res) => {
 
     // คำนวณยอด Chaser (1 Coin * 10 * 1.02)
     const totalChaser = Math.floor(swapAmount * CH_RATE * CH_BONUS);
-    const amountWei = ethers.parseUnits(totalChaser.toString(), 18);
-    
-    const nonce = Date.now(); 
-    // แก้ไขในไฟล์ index.js (ฝั่ง Server)
-const deadline = Math.floor(Date.now() / 1000) + (60 * 30); // เพิ่มเป็น 30 นาที
+    // แก้ไขใน index.js (ฝั่ง Server)
+const amountWei = ethers.parseUnits(totalChaser.toString(), 18);
 
-
-    // สร้าง Signature (โครงสร้างตาม Smart Contract ของ Chaser)
-    // แก้ไขในไฟล์ index.js (ฝั่ง Server)
-const packedData = ethers.solidityPackedKeccak256(
-  ["address", "uint256", "uint256", "uint256"], // เหลือแค่ 4 ประเภท
-  [CH_TOKEN, amountWei, nonce, deadline]        // ตัด CH_VAULT ออก
+// ลำดับต้องตรงกับ Solidity: msg.sender, tokenAddress, amount, nonce, deadline, address(this)
+const packedData = ethers.abiCoder.encode(
+    ["address", "address", "uint256", "uint256", "uint256", "address"],
+    [userId, CH_TOKEN, amountWei, nonce, deadline, CH_VAULT]
 );
 
-    const vaultSignature = await signer.signMessage(ethers.getBytes(packedData));
+const messageHash = ethers.keccak256(packedData);
+const vaultSignature = await signer.signMessage(ethers.getBytes(messageHash));
+
 
     res.json({
       success: true,
