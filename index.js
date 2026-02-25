@@ -684,7 +684,8 @@ app.post("/api/get-chaser-signature", async (req, res) => {
             // (Optional) ส่ง error code ไปให้ Frontend จัดการต่อได้ง่ายขึ้น
             errorCode: error.message 
         });
-    
+    }
+  }):
 
 // ==========================================
 // [SECTION] CHASER SUCCESS CALLBACK (หักเงินหลังเคลมสำเร็จ)
