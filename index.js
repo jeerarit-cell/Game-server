@@ -602,7 +602,9 @@ app.post("/api/get-chaser-signature", async (req, res) => {
     const amountWei = ethers.parseUnits(totalChaser.toString(), 18);
     
     const nonce = Date.now(); 
-    const deadline = Math.floor(Date.now() / 1000) + (60 * 10); // หมดอายุใน 10 นาที
+    // แก้ไขในไฟล์ index.js (ฝั่ง Server)
+const deadline = Math.floor(Date.now() / 1000) + (60 * 30); // เพิ่มเป็น 30 นาที
+
 
     // สร้าง Signature (โครงสร้างตาม Smart Contract ของ Chaser)
     // แก้ไขในไฟล์ index.js (ฝั่ง Server)
