@@ -577,33 +577,34 @@ app.get("/ping", (req, res) => {
 // ==========================================
 // [SECTION] GET CHASER SIGNATURE
 // ==========================================
-
 app.post("/api/get-chaser-signature", async (req, res) => {
     try {
         const { userId, amountCoin } = req.body;
 
-        // 1. ดึงข้อมูล User และ Config
+        // 1. ดึงข้อมูล User
         const userRef = db.collection("users").doc(userId);
         const doc = await userRef.get();
         if (!doc.exists) return res.status(404).json({ success: false, message: "USER_NOT_FOUND" });
 
         const userWallet = doc.data().walletAddress;
-        const CH_TOKEN = process.env.CHASER_TOKEN_ADDRESS; // ตรวจสอบชื่อใน .env ให้ตรงกัน
-        const CH_VAULT = process.env.CHASER_VAULT_ADDRESS;
 
-        // --- จุดสำคัญ: ตรวจสอบ Address ห้ามเป็น null ---
+        // 2. ดึงค่า Config (ปรับชื่อให้ตรงกับที่คุณตั้งใน Render)
+        const CH_TOKEN = process.env.CHASER_TOKEN_ADDRESS;
+        const CH_VAULT = process.env.CHASER_VAULT_ADDRESS; // ใช้ชื่อเต็มตามที่คุณแจ้งมา
+
+        // ดัก Error ถ้าตัวแปรเป็น null หรือ undefined
         if (!userWallet || !CH_TOKEN || !CH_VAULT) {
-            console.error("❌ Missing Addresses:", { userWallet, CH_TOKEN, CH_VAULT });
-            return res.status(400).json({ success: false, message: "CONFIG_ERROR: Missing Address" });
+            console.error("❌ Missing Address Config:", { userWallet, CH_TOKEN, CH_VAULT });
+            throw new Error("ADDRESS_CONFIG_MISSING");
         }
 
-        // 2. คำนวณยอด (Rate 10.2)
+        // 3. คำนวณค่า (Rate 10.2)
         const amountWei = ethers.parseUnits((amountCoin * 10.2).toFixed(18), 18);
         const nonce = Date.now();
-        const deadline = Math.floor(Date.now() / 1000) + 1200;
+        const deadline = Math.floor(Date.now() / 1000) + 1200; // 20 นาที
 
-        // 3. สร้าง Signature ให้ตรงกับ Smart Contract (ใช้ abi.encode)
-        // สัญญาของคุณใช้: user, tokenAddress, amount, nonce, deadline, address(this)
+        // 4. สร้าง Signature ให้ตรงกับ abi.encode ใน Smart Contract
+        // ลำดับ: user, tokenAddress, amount, nonce, deadline, address(this)
         const abiCoder = ethers.AbiCoder.defaultAbiCoder();
         const encodedData = abiCoder.encode(
             ["address", "address", "uint256", "uint256", "uint256", "address"],
@@ -611,7 +612,8 @@ app.post("/api/get-chaser-signature", async (req, res) => {
         );
 
         const messageHash = ethers.keccak256(encodedData);
-        // signMessage จะใส่ Prefix ให้ตรงกับ message.toEthSignedMessageHash() ใน Solidty
+        
+        // signMessage จะใส่ Prefix ให้ตรงกับ toEthSignedMessageHash() ใน Solidity
         const signature = await signer.signMessage(ethers.getBytes(messageHash));
 
         res.json({
