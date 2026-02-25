@@ -632,32 +632,6 @@ app.post("/api/get-chaser-signature", async (req, res) => {
     }
 });
 
-// 2. สร้าง Hash จาก Data ที่ Encode แล้ว
-const messageHash = ethers.keccak256(packedData);
-
-// 3. เซ็นชื่อ (signMessage จะเติม Prefix ให้เอง ตรงกับ toEthSignedMessageHash ใน Solidity)
-const signature = await signer.signMessage(ethers.getBytes(messageHash));
-
-
-        // 5. ตอบกลับ Frontend
-        res.json({
-            success: true,
-            claimData: {
-                tokenAddress: process.env.CH_TOKEN,
-                amount: amountWei.toString(),
-                nonce: nonce.toString(),
-                deadline: deadline,
-                signature: signature
-            }
-        });
-
-        console.log(`✅ Signature Generated | User: ${userId} | Amount: ${amountCoin} Coin`);
-
-    } catch (error) {
-        console.error("❌ Signature Error:", error);
-        res.status(500).json({ success: false, message: "เกิดข้อผิดพลาดที่เซิร์ฟเวอร์" });
-    }
-});
 
 // ==========================================
 // [SECTION] CHASER SUCCESS CALLBACK
