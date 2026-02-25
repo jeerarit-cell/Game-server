@@ -7,6 +7,12 @@ require("dotenv").config();
 const app = express();
 app.use(cors({ origin: "*" }));
 app.use(express.json());
+// ดึงค่า Config สำหรับ Chaser จาก .env
+const CH_TOKEN = process.env.CHASER_TOKEN_ADDRESS;
+const CH_VAULT = process.env.CHASER_VAULT_ADDRESS;
+const CH_RATE = Number(process.env.CHASER_RATE) || 10;
+const CH_BONUS = Number(process.env.CHASER_BONUS) || 1.02;
+
 
 // ==========================================
 // 1. FIREBASE ADMIN SETUP
@@ -569,74 +575,63 @@ app.get("/ping", (req, res) => {
 });
 
 // ==========================================
-// API 6: CHASER SWAP (สร้างลายเซ็น - เรียง ABI ตามโครงสร้างเดิม)
+// API 6: CHASER SWAP (ดึงข้อมูลจากโครงสร้างตามรูปภาพ)
 // ==========================================
 app.post("/api/get-chaser-signature", async (req, res) => {
-  console.log("---- CHASER SWAP REQUEST ----");
   try {
     const { userId, amountCoin } = req.body;
-    if (!userId || !amountCoin) return res.status(400).json({ success: false, message: "ข้อมูลไม่ครบถ้วน" });
+    if (!userId || !amountCoin) return res.status(400).json({ success: false, message: "Missing data" });
 
-    const swapAmount = Number(amountCoin);
-    const CHASER_MIN = 100;
-    if (swapAmount < CHASER_MIN) return res.status(400).json({ success: false, message: `ขั้นต่ำคือ ${CHASER_MIN} COIN` });
-
+    // 1. เข้าไปที่ Collection "users" และหา Document ตาม userId (เช่น 0x28a...)
     const userRef = db.collection("users").doc(userId);
     const doc = await userRef.get();
     
     if (!doc.exists) throw new Error("USER_NOT_FOUND");
     
     const userData = doc.data();
-    const currentBalance = Number(userData.coin) || 0;
-    const userWallet = userData.walletAddress; // ใช้ Address กระเป๋าจริงของผู้เล่น
+    
+    // 2. ดึงเลขกระเป๋าจากฟิลด์ "walletAddress" ตามรูปภาพที่คุณส่งมา
+    const userWallet = userData.walletAddress; 
 
-    if (currentBalance < swapAmount) throw new Error("INSUFFICIENT_FUNDS");
-    if (!userWallet) throw new Error("WALLET_NOT_FOUND");
+    if (!userWallet) throw new Error("WALLET_NOT_FOUND_IN_FIREBASE");
 
-    const CH_RATE = Number(process.env.CHASER_RATE) || 10;
-    const CH_BONUS = Number(process.env.CHASER_BONUS) || 1.02;
-    const CH_TOKEN = process.env.CHASER_TOKEN_ADDRESS;
-    const CH_VAULT = process.env.CHASER_VAULT_ADDRESS;
-
-    // 1. เตรียมตัวแปรที่ต้องใช้ใน ABI (ให้ครบถ้วน)
+    // --- ส่วนการสร้าง Signature และ ABI (ลำดับเดิม) ---
     const nonce = Date.now(); 
-    const deadline = Math.floor(Date.now() / 1000) + (60 * 20); // 20 นาที
-    const totalChaser = Math.floor(swapAmount * CH_RATE * CH_BONUS);
-    const amountWei = ethers.parseUnits(totalChaser.toString(), 18);
+    const deadline = Math.floor(Date.now() / 1000) + (60 * 20);
+    const amountWei = ethers.parseUnits(Math.floor(amountCoin * CH_RATE * CH_BONUS).toString(), 18);
 
-    // 2. Encode ข้อมูลโดย "เรียงลำดับตามเดิม" ที่คุณกำหนดไว้
-    // ลำดับ: userAddress, tokenAddress, amount, nonce, deadline, vaultAddress
     const encoder = ethers.AbiCoder.defaultAbiCoder();
     const packedData = encoder.encode(
         ["address", "address", "uint256", "uint256", "uint256", "address"],
-        [userWallet, CH_TOKEN, amountWei, nonce, deadline, CH_VAULT]
+        [
+            userWallet,                           // 1. จากฟิลด์ walletAddress ในรูป
+            process.env.CHASER_TOKEN_ADDRESS,     // 2. Token
+            amountWei,                            // 3. Amount
+            nonce,                                // 4. Nonce
+            deadline,                             // 5. Deadline
+            process.env.CHASER_VAULT_ADDRESS      // 6. Vault
+        ]
     );
 
-    // 3. Hash และสร้าง Signature
     const messageHash = ethers.keccak256(packedData);
     const vaultSignature = await signer.signMessage(ethers.getBytes(messageHash));
 
     res.json({
       success: true,
       claimData: { 
-        tokenAddress: CH_TOKEN,
+        tokenAddress: process.env.CHASER_TOKEN_ADDRESS,
         amount: amountWei.toString(), 
         nonce: nonce, 
         deadline: deadline,
         signature: vaultSignature, 
-        vaultAddress: CH_VAULT 
+        vaultAddress: process.env.CHASER_VAULT_ADDRESS 
       }
     });
   } catch (error) {
-    console.error("❌ Chaser Signature Error:", error.message);
-    let clientMessage = "เกิดข้อผิดพลาดที่เซิร์ฟเวอร์";
-    if (error.message === "USER_NOT_FOUND") clientMessage = "ไม่พบข้อมูลผู้เล่น";
-    else if (error.message === "WALLET_NOT_FOUND") clientMessage = "ผู้เล่นยังไม่ได้ผูกกระเป๋า";
-    else if (error.message === "INSUFFICIENT_FUNDS") clientMessage = "ยอด Coin ไม่เพียงพอ";
-    res.status(400).json({ success: false, message: clientMessage });
+    console.error("❌ Error:", error.message);
+    res.status(400).json({ success: false, message: error.message });
   }
 });
-
 
 // ==========================================
 // API 7: CHASER SUCCESS (หักเงินจริงหลังเคลมสำเร็จ)
@@ -662,7 +657,6 @@ app.post("/api/chaser-success", async (req, res) => {
 
       const updatedBalance = realBalance - requestAmount;
 
-      // หักเงินและบันทึกประวัติ
       t.update(userRef, { 
         coin: updatedBalance, 
         lastChaserSwap: new Date().toISOString() 
@@ -678,15 +672,12 @@ app.post("/api/chaser-success", async (req, res) => {
       return updatedBalance; 
     });
 
-    console.log(`✅ [Chaser Success] User: ${userId} | Used: ${requestAmount} Coins | Nonce: ${nonce}`);
     res.json({ success: true, newBalance: newBalance });
   } catch (error) {
     console.error("❌ Chaser Sync Error:", error.message);
     res.status(400).json({ success: false, message: error.message });
   }
 });
-
-
 
 
 const PORT = process.env.PORT || 3000;
