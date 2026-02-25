@@ -595,7 +595,8 @@ app.post("/api/get-chaser-signature", async (req, res) => {
         }
 
         const userData = doc.data();
-        const userWallet = userData.walletAddress; // ดึง Wallet ที่ลงทะเบียนไว้
+    const userWallet = userData.walletAddress;
+    const currentBalance = Number(userData.coin) || 0;
 
         if (!userWallet) {
             return res.status(400).json({ success: false, message: "WALLET_NOT_REGISTERED" });
@@ -613,15 +614,6 @@ app.post("/api/get-chaser-signature", async (req, res) => {
 
         // 4. การเรียง ABI Encoding (ลำดับ 6 ตัวตาม Smart Contract MultiGameVault)
         // [User, Token, Amount, Nonce, Deadline, Vault]
-// เพิ่มเช็กก่อน Encode
-console.log("--- DEBUG START ---");
-console.log("userId จากหน้าบ้าน:", userId);
-console.log("ดึงกระเป๋ามาได้ไหม:", userWallet);
-console.log("CH_TOKEN ใน .env:", process.env.CH_TOKEN);
-console.log("CH_VAULT ใน .env:", process.env.CH_VAULT);
-console.log("--- DEBUG END ---");
-
-// ถ้าตัวไหนเป็น undefined หรือ null ตัวนั้นแหละคือต้นเหตุ!
 
         const encoder = ethers.AbiCoder.defaultAbiCoder();
         const packedData = encoder.encode(
