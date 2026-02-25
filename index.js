@@ -633,6 +633,9 @@ app.post("/api/get-chaser-signature", async (req, res) => {
         const signature = await signer.signMessage(ethers.getBytes(messageHash));
 
         // 6. ส่งข้อมูลกลับไปที่ Frontend (คงชื่อตัวแปรให้ตรงกับหน้าบ้าน)
+        // ... โค้ดด้านบนของคุณ (การสร้าง Signature) ...
+
+        // 6. ส่งข้อมูลกลับไปที่ Frontend
         res.json({
             success: true,
             claimData: {
@@ -646,45 +649,27 @@ app.post("/api/get-chaser-signature", async (req, res) => {
         });
 
         console.log(`✅ Signature Generated for User: ${userId} | Amount: ${amountCoin}`);
+
     } catch (error) {
         console.error("❌ Chaser Signature Error:", error);
 
-        // กำหนด Default Error
-        let status = 500;
-        let clientMessage = "เกิดข้อผิดพลาดที่เซิร์ฟเวอร์ กรุณาลองใหม่ภายหลัง";
+        // จัดกลุ่ม Error เพื่อไม่ให้โค้ดรก
+        const errorMapping = {
+            "USER_NOT_FOUND": { status: 404, msg: "ไม่พบข้อมูลผู้เล่น" },
+            "WALLET_NOT_FOUND": { status: 400, msg: "ไม่พบกระเป๋าที่ผูกไว้" },
+            "INSUFFICIENT_FUNDS": { status: 400, msg: "ยอด Coin ไม่เพียงพอ" },
+            "INVALID_AMOUNT": { status: 400, msg: "จำนวนเงินไม่ถูกต้อง" }
+        };
 
-        // ดักจับ Error ตามชื่อที่โยนมา (Custom Errors)
-        switch (error.message) {
-            case "USER_NOT_FOUND":
-                status = 404;
-                clientMessage = "ไม่พบข้อมูลผู้เล่นในระบบ";
-                break;
-            case "WALLET_NOT_FOUND":
-                status = 400;
-                clientMessage = "กรุณาผูกกระเป๋าเงิน (Wallet) ก่อนทำรายการ";
-                break;
-            case "INSUFFICIENT_FUNDS":
-                status = 400;
-                clientMessage = "ยอด Coin ของคุณไม่เพียงพอสำหรับการ Claim";
-                break;
-            case "INVALID_AMOUNT":
-                status = 400;
-                clientMessage = "จำนวนเงินไม่ถูกต้อง";
-                break;
-        }
+        const errorDetail = errorMapping[error.message] || { status: 500, msg: "เกิดข้อผิดพลาดที่เซิร์ฟเวอร์" };
 
-        // กรณีเป็น Error จาก Library ภายนอก (เช่น Ethers.js หรือ Database)
-        if (error.code === 'ECONNREFUSED') {
-            clientMessage = "ไม่สามารถเชื่อมต่อฐานข้อมูลได้";
-        }
-
-        res.status(status).json({ 
+        res.status(errorDetail.status).json({ 
             success: false, 
-            message: clientMessage,
-            // (Optional) ส่ง error code ไปให้ Frontend จัดการต่อได้ง่ายขึ้น
-            errorCode: error.message 
+            message: errorDetail.msg 
         });
     }
+}); // ปิด Route Handler (ต้องมีแค่วงเล็บปิดกับเซมิโคลอน)
+
   
 // ==========================================
 // [SECTION] CHASER SUCCESS CALLBACK (หักเงินหลังเคลมสำเร็จ)
