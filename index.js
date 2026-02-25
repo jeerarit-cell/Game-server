@@ -618,14 +618,28 @@ app.post("/api/get-chaser-signature", async (req, res) => {
         const deadline = Math.floor(Date.now() / 1000) + 1200; // 20 นาที
 
         // 4. สร้าง Hash และ Signature
-        // หมายเหตุ: ลำดับต้องตรงกับ abi.encodePacked ใน Smart Contract
-        const messageHash = ethers.solidityPackedKeccak256(
-            ["address", "address", "uint256", "uint256", "uint256"],
-            [userWallet, process.env.CH_TOKEN, amountWei, nonce, deadline]
-        );
+        // --- แก้ไขส่วนการสร้าง Hash ให้ตรงกับ Smart Contract ---
 
-        // เซ็นชื่อ (ethers จะเติม Prefix \x19Ethereum Signed Message ให้เอง)
-        const signature = await signer.signMessage(ethers.getBytes(messageHash));
+// 1. ใช้ abiCoder.encode (เพราะใน Solidity ใช้ abi.encode ไม่ใช่ encodePacked)
+const encoder = ethers.AbiCoder.defaultAbiCoder();
+const packedData = encoder.encode(
+    ["address", "address", "uint256", "uint256", "uint256", "address"],
+    [
+        userWallet,           // msg.sender ในสัญญา
+        process.env.CH_TOKEN, // tokenAddress
+        amountWei,            // amount
+        nonce,                // nonce
+        deadline,             // deadline
+        process.env.CH_VAULT  // address(this) ในสัญญา (ต้องตรงกันเป๊ะ)
+    ]
+);
+
+// 2. สร้าง Hash จาก Data ที่ Encode แล้ว
+const messageHash = ethers.keccak256(packedData);
+
+// 3. เซ็นชื่อ (signMessage จะเติม Prefix ให้เอง ตรงกับ toEthSignedMessageHash ใน Solidity)
+const signature = await signer.signMessage(ethers.getBytes(messageHash));
+
 
         // 5. ตอบกลับ Frontend
         res.json({
