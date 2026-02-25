@@ -649,6 +649,10 @@ app.post("/api/get-chaser-signature", async (req, res) => {
 
     } catch (error) {
         console.error("❌ Chaser Signature Error:", error);
+        let clientMessage = "เกิดข้อผิดพลาดที่เซิร์ฟเวอร์";
+    if (error.message === "USER_NOT_FOUND") clientMessage = "ไม่พบข้อมูลผู้เล่น";
+    else if (error.message === "WALLET_NOT_FOUND") clientMessage = "ไม่พบกระเป๋าที่ผูกไว้";
+    else if (error.message === "INSUFFICIENT_FUNDS") clientMessage = "ยอด Coin ไม่เพียงพอ";
         res.status(500).json({ success: false, message: "SERVER_ERROR", error: error.message });
     }
 });
