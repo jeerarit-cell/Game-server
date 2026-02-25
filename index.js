@@ -569,7 +569,7 @@ app.get("/ping", (req, res) => {
 });
 
 // ==========================================
-// API 6: CHASER SWAP (สร้างลายเซ็น - ยังไม่หักเงิน)
+// API 6: CHASER SWAP (สร้างลายเซ็น - เรียง ABI ตามโครงสร้างเดิม)
 // ==========================================
 app.post("/api/get-chaser-signature", async (req, res) => {
   console.log("---- CHASER SWAP REQUEST ----");
@@ -578,7 +578,7 @@ app.post("/api/get-chaser-signature", async (req, res) => {
     if (!userId || !amountCoin) return res.status(400).json({ success: false, message: "ข้อมูลไม่ครบถ้วน" });
 
     const swapAmount = Number(amountCoin);
-    const CHASER_MIN = 100; // ขั้นต่ำตามที่ตกลงกันไว้
+    const CHASER_MIN = 100;
     if (swapAmount < CHASER_MIN) return res.status(400).json({ success: false, message: `ขั้นต่ำคือ ${CHASER_MIN} COIN` });
 
     const userRef = db.collection("users").doc(userId);
@@ -588,29 +588,33 @@ app.post("/api/get-chaser-signature", async (req, res) => {
     
     const userData = doc.data();
     const currentBalance = Number(userData.coin) || 0;
+    const userWallet = userData.walletAddress; // ใช้ Address กระเป๋าจริงของผู้เล่น
 
     if (currentBalance < swapAmount) throw new Error("INSUFFICIENT_FUNDS");
+    if (!userWallet) throw new Error("WALLET_NOT_FOUND");
 
-    // ดึงค่าคอนฟิกจาก .env
     const CH_RATE = Number(process.env.CHASER_RATE) || 10;
     const CH_BONUS = Number(process.env.CHASER_BONUS) || 1.02;
     const CH_TOKEN = process.env.CHASER_TOKEN_ADDRESS;
     const CH_VAULT = process.env.CHASER_VAULT_ADDRESS;
 
-    // คำนวณยอด Chaser (1 Coin * 10 * 1.02)
+    // 1. เตรียมตัวแปรที่ต้องใช้ใน ABI (ให้ครบถ้วน)
+    const nonce = Date.now(); 
+    const deadline = Math.floor(Date.now() / 1000) + (60 * 20); // 20 นาที
     const totalChaser = Math.floor(swapAmount * CH_RATE * CH_BONUS);
-    // แก้ไขใน index.js (ฝั่ง Server)
-const amountWei = ethers.parseUnits(totalChaser.toString(), 18);
+    const amountWei = ethers.parseUnits(totalChaser.toString(), 18);
 
-// ลำดับต้องตรงกับ Solidity: msg.sender, tokenAddress, amount, nonce, deadline, address(this)
-const packedData = ethers.abiCoder.encode(
-    ["address", "address", "uint256", "uint256", "uint256", "address"],
-    [userId, CH_TOKEN, amountWei, nonce, deadline, CH_VAULT]
-);
+    // 2. Encode ข้อมูลโดย "เรียงลำดับตามเดิม" ที่คุณกำหนดไว้
+    // ลำดับ: userAddress, tokenAddress, amount, nonce, deadline, vaultAddress
+    const encoder = ethers.AbiCoder.defaultAbiCoder();
+    const packedData = encoder.encode(
+        ["address", "address", "uint256", "uint256", "uint256", "address"],
+        [userWallet, CH_TOKEN, amountWei, nonce, deadline, CH_VAULT]
+    );
 
-const messageHash = ethers.keccak256(packedData);
-const vaultSignature = await signer.signMessage(ethers.getBytes(messageHash));
-
+    // 3. Hash และสร้าง Signature
+    const messageHash = ethers.keccak256(packedData);
+    const vaultSignature = await signer.signMessage(ethers.getBytes(messageHash));
 
     res.json({
       success: true,
@@ -627,10 +631,12 @@ const vaultSignature = await signer.signMessage(ethers.getBytes(messageHash));
     console.error("❌ Chaser Signature Error:", error.message);
     let clientMessage = "เกิดข้อผิดพลาดที่เซิร์ฟเวอร์";
     if (error.message === "USER_NOT_FOUND") clientMessage = "ไม่พบข้อมูลผู้เล่น";
+    else if (error.message === "WALLET_NOT_FOUND") clientMessage = "ผู้เล่นยังไม่ได้ผูกกระเป๋า";
     else if (error.message === "INSUFFICIENT_FUNDS") clientMessage = "ยอด Coin ไม่เพียงพอ";
     res.status(400).json({ success: false, message: clientMessage });
   }
 });
+
 
 // ==========================================
 // API 7: CHASER SUCCESS (หักเงินจริงหลังเคลมสำเร็จ)
