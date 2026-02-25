@@ -582,57 +582,55 @@ app.post("/api/get-chaser-signature", async (req, res) => {
     try {
         const { userId, amountCoin } = req.body;
 
-        // 1. Validation เบื้องต้น
-        if (!userId || !amountCoin || isNaN(amountCoin) || amountCoin <= 0) {
-            return res.status(400).json({ success: false, message: "ข้อมูลไม่ครบถ้วน หรือจำนวนเงินไม่ถูกต้อง" });
-        }
-
-        // 2. ดึงข้อมูลจาก Firebase
+        // 1. ดึงข้อมูล User และ Config
         const userRef = db.collection("users").doc(userId);
         const doc = await userRef.get();
+        if (!doc.exists) return res.status(404).json({ success: false, message: "USER_NOT_FOUND" });
 
-        if (!doc.exists) {
-            return res.status(404).json({ success: false, message: "ไม่พบข้อมูลผู้เล่น" });
+        const userWallet = doc.data().walletAddress;
+        const CH_TOKEN = process.env.CHASER_TOKEN_ADDRESS; // ตรวจสอบชื่อใน .env ให้ตรงกัน
+        const CH_VAULT = process.env.CHASER_VAULT_ADDRESS;
+
+        // --- จุดสำคัญ: ตรวจสอบ Address ห้ามเป็น null ---
+        if (!userWallet || !CH_TOKEN || !CH_VAULT) {
+            console.error("❌ Missing Addresses:", { userWallet, CH_TOKEN, CH_VAULT });
+            return res.status(400).json({ success: false, message: "CONFIG_ERROR: Missing Address" });
         }
 
-        const userData = doc.data();
-        const userWallet = userData.walletAddress;
-        const currentCoin = Number(userData.coin) || 0;
+        // 2. คำนวณยอด (Rate 10.2)
+        const amountWei = ethers.parseUnits((amountCoin * 10.2).toFixed(18), 18);
+        const nonce = Date.now();
+        const deadline = Math.floor(Date.now() / 1000) + 1200;
 
-        if (!userWallet) {
-            return res.status(400).json({ success: false, message: "กรุณาผูกกระเป๋าก่อนทำรายการ" });
-        }
+        // 3. สร้าง Signature ให้ตรงกับ Smart Contract (ใช้ abi.encode)
+        // สัญญาของคุณใช้: user, tokenAddress, amount, nonce, deadline, address(this)
+        const abiCoder = ethers.AbiCoder.defaultAbiCoder();
+        const encodedData = abiCoder.encode(
+            ["address", "address", "uint256", "uint256", "uint256", "address"],
+            [userWallet, CH_TOKEN, amountWei, nonce, deadline, CH_VAULT]
+        );
 
-        if (currentCoin < amountCoin) {
-            return res.status(400).json({ success: false, message: "ยอด Coin ไม่เพียงพอ" });
-        }
+        const messageHash = ethers.keccak256(encodedData);
+        // signMessage จะใส่ Prefix ให้ตรงกับ message.toEthSignedMessageHash() ใน Solidty
+        const signature = await signer.signMessage(ethers.getBytes(messageHash));
 
-        // 3. การคำนวณค่า (Rate 10.2)
-        // ใช้ BigInt เพื่อความแม่นยำสูงสุด: (amount * 102) / 10 เพื่อให้ได้ 10.2
-        const multiplier = BigInt(102); 
-        const divisor = BigInt(10);
-        const baseAmount = ethers.parseUnits(amountCoin.toString(), 18);
-        const amountWei = (baseAmount * multiplier) / divisor;
+        res.json({
+            success: true,
+            claimData: {
+                tokenAddress: CH_TOKEN,
+                amount: amountWei.toString(),
+                nonce: nonce.toString(),
+                deadline: deadline,
+                signature: signature,
+                vaultAddress: CH_VAULT
+            }
+        });
 
-        const nonce = Date.now(); // ใช้ Timestamp
-        const deadline = Math.floor(Date.now() / 1000) + 1200; // 20 นาที
-
-        // 4. สร้าง Hash และ Signature
-        // --- แก้ไขส่วนการสร้าง Hash ให้ตรงกับ Smart Contract ---
-
-// 1. ใช้ abiCoder.encode (เพราะใน Solidity ใช้ abi.encode ไม่ใช่ encodePacked)
-const encoder = ethers.AbiCoder.defaultAbiCoder();
-const packedData = encoder.encode(
-    ["address", "address", "uint256", "uint256", "uint256", "address"],
-    [
-        userWallet,           // msg.sender ในสัญญา
-        process.env.CH_TOKEN, // tokenAddress
-        amountWei,            // amount
-        nonce,                // nonce
-        deadline,             // deadline
-        process.env.CH_VAULT  // address(this) ในสัญญา (ต้องตรงกันเป๊ะ)
-    ]
-);
+    } catch (error) {
+        console.error("❌ Signature Error:", error.message);
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
 
 // 2. สร้าง Hash จาก Data ที่ Encode แล้ว
 const messageHash = ethers.keccak256(packedData);
