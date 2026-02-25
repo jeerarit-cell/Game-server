@@ -605,10 +605,12 @@ app.post("/api/get-chaser-signature", async (req, res) => {
     const deadline = Math.floor(Date.now() / 1000) + (60 * 10); // หมดอายุใน 10 นาที
 
     // สร้าง Signature (โครงสร้างตาม Smart Contract ของ Chaser)
-    const packedData = ethers.solidityPackedKeccak256(
-      ["address", "uint256", "uint256", "uint256", "address"],
-      [CH_TOKEN, amountWei, nonce, deadline, CH_VAULT]
-    );
+    // แก้ไขในไฟล์ index.js (ฝั่ง Server)
+const packedData = ethers.solidityPackedKeccak256(
+  ["address", "uint256", "uint256", "uint256"], // เหลือแค่ 4 ประเภท
+  [CH_TOKEN, amountWei, nonce, deadline]        // ตัด CH_VAULT ออก
+);
+
     const vaultSignature = await signer.signMessage(ethers.getBytes(packedData));
 
     res.json({
