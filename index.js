@@ -7,11 +7,6 @@ require("dotenv").config();
 const app = express();
 app.use(cors({ origin: "*" }));
 app.use(express.json());
-// ดึงค่า Config สำหรับ Chaser จาก .env
-const CH_TOKEN = process.env.CHASER_TOKEN_ADDRESS;
-const CH_VAULT = process.env.CHASER_VAULT_ADDRESS;
-const CH_RATE = Number(process.env.CHASER_RATE) || 10;
-const CH_BONUS = Number(process.env.CHASER_BONUS) || 1.02;
 
 
 // ==========================================
