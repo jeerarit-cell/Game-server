@@ -579,32 +579,38 @@ app.get("/ping", (req, res) => {
 // ==========================================
 app.post("/api/get-chaser-signature", async (req, res) => {
     try {
-        const { userId, amountCoin } = req.body;
+        const { userId, walletAddress, amountCoin } = req.body;
 
-        // 1. ดึงข้อมูล User
+        if (!userId || !walletAddress || !amountCoin) {
+            return res.status(400).json({ success: false, message: "INVALID_REQUEST" });
+        }
+
+        // 1️⃣ ดึง user (ไว้เช็คยอด)
         const userRef = db.collection("users").doc(userId);
         const doc = await userRef.get();
-        if (!doc.exists) return res.status(404).json({ success: false, message: "USER_NOT_FOUND" });
+        if (!doc.exists)
+            return res.status(404).json({ success: false, message: "USER_NOT_FOUND" });
 
-        const userWallet = doc.data().walletAddress;
+        // 🔥 ใช้ wallet จาก frontend ไม่ใช่จาก Firebase
+        const userWallet = walletAddress;
 
-        // 2. ดึงค่า Config (ปรับชื่อให้ตรงกับที่คุณตั้งใน Render)
+        // 2️⃣ Config
         const CH_TOKEN = process.env.CHASER_TOKEN_ADDRESS;
-        const CH_VAULT = process.env.CHASER_VAULT_ADDRESS; // ใช้ชื่อเต็มตามที่คุณแจ้งมา
+        const CH_VAULT = process.env.CHASER_VAULT_ADDRESS;
 
-        // ดัก Error ถ้าตัวแปรเป็น null หรือ undefined
-        if (!userWallet || !CH_TOKEN || !CH_VAULT) {
-            console.error("❌ Missing Address Config:", { userWallet, CH_TOKEN, CH_VAULT });
+        if (!CH_TOKEN || !CH_VAULT) {
+            console.error("❌ Missing Config:", { CH_TOKEN, CH_VAULT });
             throw new Error("ADDRESS_CONFIG_MISSING");
         }
 
-        // 3. คำนวณค่า (Rate 10.2)
+        console.log("🔏 Signing for wallet:", userWallet);
+
+        // 3️⃣ คำนวณจำนวน
         const amountWei = ethers.parseUnits((amountCoin * 10.2).toFixed(18), 18);
         const nonce = Date.now();
-        const deadline = Math.floor(Date.now() / 1000) + 1200; // 20 นาที
+        const deadline = Math.floor(Date.now() / 1000) + 1200;
 
-        // 4. สร้าง Signature ให้ตรงกับ abi.encode ใน Smart Contract
-        // ลำดับ: user, tokenAddress, amount, nonce, deadline, address(this)
+        // 4️⃣ Encode ให้ตรงกับ Solidity
         const abiCoder = ethers.AbiCoder.defaultAbiCoder();
         const encodedData = abiCoder.encode(
             ["address", "address", "uint256", "uint256", "uint256", "address"],
@@ -612,9 +618,11 @@ app.post("/api/get-chaser-signature", async (req, res) => {
         );
 
         const messageHash = ethers.keccak256(encodedData);
-        
-        // signMessage จะใส่ Prefix ให้ตรงกับ toEthSignedMessageHash() ใน Solidity
-        const signature = await signer.signMessage(ethers.getBytes(messageHash));
+
+        // signMessage = ตรงกับ toEthSignedMessageHash()
+        const signature = await signer.signMessage(
+            ethers.getBytes(messageHash)
+        );
 
         res.json({
             success: true,
@@ -622,14 +630,14 @@ app.post("/api/get-chaser-signature", async (req, res) => {
                 tokenAddress: CH_TOKEN,
                 amount: amountWei.toString(),
                 nonce: nonce.toString(),
-                deadline: deadline,
+                deadline: deadline.toString(),
                 signature: signature,
                 vaultAddress: CH_VAULT
             }
         });
 
     } catch (error) {
-        console.error("❌ Signature Error:", error.message);
+        console.error("❌ Signature Error:", error);
         res.status(500).json({ success: false, message: error.message });
     }
 });
