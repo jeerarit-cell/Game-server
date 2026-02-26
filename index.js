@@ -571,21 +571,25 @@ app.get("/ping", (req, res) => {
 
     // เพิ่ม CONFIG ไว้ด้านบนสุดของไฟล์
 const CHASER_MIN_COIN = Number(process.env.CHASER_MIN_COIN) || 100; // ลิมิตขั้นต่ำ
-
 app.post("/api/get-chaser-signature", async (req, res) => {
     try {
         const { userId, amountCoin } = req.body;
         const requestCoin = Number(amountCoin);
 
-        // 1. เช็คลิมิตขั้นต่ำ (Min Deposit)
-        if (requestCoin < CHASER_MIN_COIN) {
-            return res.status(400).json({ 
-                success: false, 
-                message: `ขั้นต่ำในการแลกคือ ${CHASER_MIN_COIN} Coins` 
+        if (!requestCoin || requestCoin <= 0) {
+            return res.status(400).json({
+                success: false,
+                message: "INVALID_AMOUNT"
             });
         }
 
-        // 2. ดึงข้อมูลจาก Firebase และตรวจสอบ Address
+        if (requestCoin < CHASER_MIN_COIN) {
+            return res.status(400).json({
+                success: false,
+                message: `ขั้นต่ำในการแลกคือ ${CHASER_MIN_COIN} Coins`
+            });
+        }
+
         const userRef = db.collection("users").doc(userId);
         const userDoc = await userRef.get();
         if (!userDoc.exists) throw new Error("USER_NOT_FOUND");
@@ -594,24 +598,21 @@ app.post("/api/get-chaser-signature", async (req, res) => {
         const userWallet = userData.walletAddress;
         const currentBalance = Number(userData.coin) || 0;
 
-        // ตรวจสอบว่ามีกระเป๋าและเงินพอไหม
         if (!userWallet) throw new Error("WALLET_NOT_LINKED");
         if (currentBalance < requestCoin) throw new Error("INSUFFICIENT_COINS");
 
-        // 3. ป้องกัน Address ผิดรูปแบบ (Normalize)
         const cleanUserWallet = ethers.getAddress(userWallet);
         const cleanTokenAddr = ethers.getAddress(process.env.CHASER_TOKEN_ADDRESS);
         const cleanVaultAddr = ethers.getAddress(process.env.CHASER_VAULT_ADDRESS);
 
-        // 4. คำนวณยอดรางวัล (คำนวณที่ Server เท่านั้น)
-        const exchangeRate = Number(process.env.CHASER_EXCHANGE_RATE);
-        const amountWei = ethers.parseUnits((requestCoin * exchangeRate).toFixed(18), 18);
-        
-        const nonce = Date.now(); 
-        const deadline = Math.floor(Date.now() / 1000) + 1200; // 20 min
+        // 🎯 FIXED RATE: 1 Coin = 1 Token
+        const amountWei = ethers.parseUnits(String(requestCoin), 18);
 
-        // 5. สร้าง Signature (ABI Standard)
+        const nonce = Date.now();
+        const deadline = Math.floor(Date.now() / 1000) + 1200;
+
         const abiCoder = ethers.AbiCoder.defaultAbiCoder();
+
         const messageHash = ethers.keccak256(
             abiCoder.encode(
                 ["address", "address", "uint256", "uint256", "uint256", "address"],
@@ -619,7 +620,9 @@ app.post("/api/get-chaser-signature", async (req, res) => {
             )
         );
 
-        const signature = await signer.signMessage(ethers.getBytes(messageHash));
+        const signature = await signer.signMessage(
+            ethers.getBytes(messageHash)
+        );
 
         res.json({
             success: true,
@@ -631,6 +634,7 @@ app.post("/api/get-chaser-signature", async (req, res) => {
                 signature: signature
             }
         });
+
     } catch (error) {
         console.error("❌ Sign Error:", error.message);
         res.status(400).json({ success: false, message: error.message });
