@@ -612,7 +612,7 @@ const totalTokens = Math.round((requestCoin * CHASER_RATE) * 100) / 100;
 const amountWei = ethers.parseUnits(totalTokens.toFixed(2), 18);
         
         const nonce = Date.now();
-        const deadline = Math.floor(Date.now() / 1000) + 1200;
+        const deadline = Math.floor(Date.now() / 1000) + 3600;
 
         // 3. สร้าง Signature (ปรับลำดับให้ตรงกับ Smart Contract V2)
         const abiCoder = ethers.AbiCoder.defaultAbiCoder();
