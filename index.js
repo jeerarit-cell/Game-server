@@ -568,25 +568,25 @@ cleanupOldFeeds();
 app.get("/ping", (req, res) => {
   res.status(200).send("Server is awake!");
 });
-   
-   // ดึงค่าจาก .env และแปลงประเภทข้อมูลให้ถูกต้อง
+
+// ==========================================
+// 2. CONFIGURATION & SIGNER
+// ==========================================
 const CHASER_MIN_COIN = Number(process.env.CHASER_MIN_COIN) || 100;
 const CHASER_RATE = Number(process.env.CHASER_RATE) || 10.2;
 
-// ตั้งค่า Signer (กระเป๋าที่ใช้เซ็นชื่อ)
 const provider = new ethers.JsonRpcProvider(process.env.RPC_URL);
 const signer = new ethers.Wallet(process.env.SIGNER_PRIVATE_KEY, provider);
 
-// แสดง Log เพื่อตรวจสอบความพร้อมตอน Start Server (สำคัญมาก)
+// แสดง Log ตรวจสอบความพร้อม
 console.log("✅ Chaser System Ready");
 console.log(`- Min Coin: ${CHASER_MIN_COIN}`);
 console.log(`- Rate: ${CHASER_RATE}`);
 console.log(`- Signer Address: ${signer.address}`);
 
-
-    // อ้างอิงลำดับตัวแปรจาก MultiGameVault: 
-// [user, token, amount, nonce, deadline, vault]
-
+// ==========================================
+// 3. API: GET SIGNATURE
+// ==========================================
 app.post("/api/get-chaser-signature", async (req, res) => {
     try {
         const { userId, amountCoin } = req.body;
@@ -597,7 +597,7 @@ app.post("/api/get-chaser-signature", async (req, res) => {
             throw new Error(`จำนวนขั้นต่ำคือ ${CHASER_MIN_COIN} Coins`);
         }
 
-        // 2. ดึงข้อมูลผู้เล่นจาก DB เพื่อเช็กยอดเงินและกระเป๋า
+        // 2. ดึงข้อมูลผู้เล่นจาก DB
         const userRef = db.collection("users").doc(userId);
         const userDoc = await userRef.get();
         if (!userDoc.exists) throw new Error("ไม่พบข้อมูลผู้เล่น");
@@ -611,22 +611,15 @@ app.post("/api/get-chaser-signature", async (req, res) => {
         const cleanTokenAddr = ethers.getAddress(process.env.CHASER_TOKEN_ADDRESS);
         const cleanVaultAddr = ethers.getAddress(process.env.CHASER_VAULT_ADDRESS);
 
-        // --- ส่วนการคำนวณใหม่ที่กันเลขเพี้ยน ---
-const rate = 10.2;
-// ใช้ Math.round เพื่อดึงค่าให้เข้าใกล้จำนวนเต็มที่ถูกต้องที่สุดก่อน
-// โดยคูณ 100 แล้วหาร 100 เพื่อเก็บทศนิยม 2 ตำแหน่งไว้ (ถ้ามี)
-const totalTokens = Math.round((requestCoin * rate) * 100) / 100;
-
-// แปลงเป็น Wei โดยระบุทศนิยม 4 ตำแหน่งให้คงที่ ป้องกัน parseUnits อ่านค่าผิด
-const amountWei = ethers.parseUnits(totalTokens.toFixed(4), 18);
-// ------------------------------------
-
+        // --- ส่วนการคำนวณที่แก้ไขแล้ว (ประกาศตัวแปรครั้งเดียว) ---
+        const totalTokens = Math.round((requestCoin * CHASER_RATE) * 100) / 100;
         const amountWei = ethers.parseUnits(totalTokens.toFixed(4), 18);
+        // --------------------------------------------------
 
-        const nonce = Date.now(); // ใช้เป็นเลข Transaction ID
+        const nonce = Date.now(); 
         const deadline = Math.floor(Date.now() / 1000) + 1200; // 20 นาที
 
-        // 4. สร้าง Signature (Packing Order ตรงตาม Smart Contract)
+        // 4. สร้าง Signature
         const abiCoder = ethers.AbiCoder.defaultAbiCoder();
         const messageHash = ethers.keccak256(
             abiCoder.encode(
@@ -636,10 +629,10 @@ const amountWei = ethers.parseUnits(totalTokens.toFixed(4), 18);
         );
         const signature = await signer.signMessage(ethers.getBytes(messageHash));
 
-        // 🎯 5. บันทึกสถานะ PENDING ลง DB (หัวใจสำคัญของความปลอดภัย)
+        // 5. บันทึกสถานะ PENDING
         await db.collection("transactions").doc(String(nonce)).set({
             userId,
-            amountCoin: requestCoin, // เก็บยอดที่ต้องหักจริงไว้ที่นี่
+            amountCoin: requestCoin,
             amountTokenWei: amountWei.toString(),
             status: "PENDING",
             timestamp: admin.firestore.FieldValue.serverTimestamp()
@@ -663,31 +656,32 @@ const amountWei = ethers.parseUnits(totalTokens.toFixed(4), 18);
     }
 });
 
+// ==========================================
+// 4. API: SUCCESS CALLBACK
+// ==========================================
 app.post("/api/chaser-success", async (req, res) => {
     try {
         const { userId, nonce, txHash } = req.body;
-        
+
         const txLogRef = db.collection("transactions").doc(String(nonce));
         const userRef = db.collection("users").doc(userId);
 
         const result = await db.runTransaction(async (t) => {
-            // A. ดึงข้อมูล PENDING จาก DB (เราจะไม่เชื่อ amount จากหน้าบ้าน)
             const txDoc = await t.get(txLogRef);
             if (!txDoc.exists) throw new Error("ไม่พบรายการคำขอนี้");
-            
+
             const txData = txDoc.data();
-            if (txData.status === "COMPLETED") throw new Error("รายการนี้ดำเนินการไปแล้ว");
+            if (txData.status === "COMPLETED") return "ALREADY_PROCESSED";
             if (txData.userId !== userId) throw new Error("ข้อมูลผู้ใช้ไม่ตรงกัน");
 
-            const actualAmountToWithdraw = txData.amountCoin; // ดึงยอดที่ Server เคยบันทึกไว้
+            const actualAmountToWithdraw = txData.amountCoin;
 
-            // B. ดึงยอดเงินปัจจุบันของผู้เล่น
             const userDoc = await t.get(userRef);
             const currentBalance = Number(userDoc.data().coin) || 0;
-            if (currentBalance < actualAmountToWithdraw) throw new Error("ยอดเงินไม่เพียงพอในขณะทำรายการ");
+            if (currentBalance < actualAmountToWithdraw) throw new Error("ยอดเงินไม่เพียงพอ");
 
-            // C. อัปเดตยอดเงิน และเปลี่ยนสถานะรายการ
             const updatedBalance = currentBalance - actualAmountToWithdraw;
+            
             t.update(userRef, { coin: updatedBalance });
             t.update(txLogRef, { 
                 status: "COMPLETED",
@@ -698,15 +692,18 @@ app.post("/api/chaser-success", async (req, res) => {
             return updatedBalance;
         });
 
+        if (result === "ALREADY_PROCESSED") {
+            return res.status(200).json({ success: true, message: "ดำเนินการเรียบร้อยแล้ว" });
+        }
+
         res.json({ success: true, newBalance: result });
 
     } catch (error) {
-        if (error.message === "ALREADY_PROCESSED") {
-            return res.status(200).json({ success: true, message: "ดำเนินการเรียบร้อยแล้ว" });
-        }
+        console.error("❌ Success Callback Error:", error.message);
         res.status(400).json({ success: false, message: error.message });
     }
 });
+
 
 
 const PORT = process.env.PORT || 3000;
