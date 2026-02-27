@@ -587,39 +587,41 @@ console.log(`- Signer Address: ${signer.address}`);
 // ==========================================
 // 3. API: GET SIGNATURE
 // ==========================================
+// [จุดแก้ไขสำคัญ] การคำนวณที่แม่นยำและไม่ประกาศตัวแปรซ้ำ
 app.post("/api/get-chaser-signature", async (req, res) => {
     try {
         const { userId, amountCoin } = req.body;
         const requestCoin = Number(amountCoin);
 
-        // 1. ตรวจสอบเงื่อนไขพื้นฐาน
+        // 1. Validation
         if (!userId || !requestCoin || requestCoin < CHASER_MIN_COIN) {
-            throw new Error(`จำนวนขั้นต่ำคือ ${CHASER_MIN_COIN} Coins`);
+            throw new Error(`ขั้นต่ำคือ ${CHASER_MIN_COIN} Coins`);
         }
 
-        // 2. ดึงข้อมูลผู้เล่นจาก DB
-        const userRef = db.collection("users").doc(userId);
-        const userDoc = await userRef.get();
-        if (!userDoc.exists) throw new Error("ไม่พบข้อมูลผู้เล่น");
-
+        // 2. ดึงข้อมูลผู้เล่น
+        const userDoc = await db.collection("users").doc(userId).get();
+        if (!userDoc.exists) throw new Error("ไม่พบผู้เล่น");
         const { walletAddress, coin } = userDoc.data();
-        if (!walletAddress) throw new Error("กรุณาผูกกระเป๋าเงินก่อน");
-        if ((Number(coin) || 0) < requestCoin) throw new Error("ยอดเงินไม่เพียงพอ");
+        
+        if (!walletAddress) throw new Error("กรุณาผูกกระเป๋าก่อน");
+        if ((Number(coin) || 0) < requestCoin) throw new Error("ยอดเงินไม่พอ");
 
-        // 3. เตรียมข้อมูลสำหรับ Signature
+        // 3. เตรียมข้อมูล (ใช้ตัวแปรจาก .env ทั้งหมด)
         const cleanUserWallet = ethers.getAddress(walletAddress);
         const cleanTokenAddr = ethers.getAddress(process.env.CHASER_TOKEN_ADDRESS);
         const cleanVaultAddr = ethers.getAddress(process.env.CHASER_VAULT_ADDRESS);
 
-        // --- ส่วนการคำนวณที่แก้ไขแล้ว (ประกาศตัวแปรครั้งเดียว) ---
+        // --- Logic การคำนวณกันเลขเพี้ยน ---
+        // ใช้ Math.round เพื่อปัดเศษให้ใกล้เคียงที่สุด และเก็บทศนิยม 2 ตำแหน่งไว้
         const totalTokens = Math.round((requestCoin * CHASER_RATE) * 100) / 100;
+        // แปลงเป็น Wei โดยบังคับ String ให้สะอาดด้วย .toFixed(4)
         const amountWei = ethers.parseUnits(totalTokens.toFixed(4), 18);
-        // --------------------------------------------------
+        // -------------------------------
 
-        const nonce = Date.now(); 
+        const nonce = Date.now();
         const deadline = Math.floor(Date.now() / 1000) + 1200; // 20 นาที
 
-        // 4. สร้าง Signature
+        // 4. สร้าง Signature (Packing ตรงตาม Contract)
         const abiCoder = ethers.AbiCoder.defaultAbiCoder();
         const messageHash = ethers.keccak256(
             abiCoder.encode(
@@ -629,7 +631,7 @@ app.post("/api/get-chaser-signature", async (req, res) => {
         );
         const signature = await signer.signMessage(ethers.getBytes(messageHash));
 
-        // 5. บันทึกสถานะ PENDING
+        // 5. บันทึก PENDING ลง DB
         await db.collection("transactions").doc(String(nonce)).set({
             userId,
             amountCoin: requestCoin,
@@ -649,12 +651,11 @@ app.post("/api/get-chaser-signature", async (req, res) => {
                 vaultAddress: cleanVaultAddr
             }
         });
-
     } catch (error) {
-        console.error("❌ Sign Error:", error.message);
         res.status(400).json({ success: false, message: error.message });
     }
 });
+
 
 // ==========================================
 // 4. API: SUCCESS CALLBACK
