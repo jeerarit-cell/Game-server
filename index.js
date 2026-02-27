@@ -569,50 +569,54 @@ app.get("/ping", (req, res) => {
   res.status(200).send("Server is awake!");
 });
 
-    // เพิ่ม CONFIG ไว้ด้านบนสุดของไฟล์
-const CHASER_MIN_COIN = Number(process.env.CHASER_MIN_COIN) || 100; // ลิมิตขั้นต่ำ
+    // อ้างอิงลำดับตัวแปรจาก MultiGameVault: 
+// [user, token, amount, nonce, deadline, vault]
+
 app.post("/api/get-chaser-signature", async (req, res) => {
     try {
         const { userId, amountCoin } = req.body;
         const requestCoin = Number(amountCoin);
 
-        if (!requestCoin || requestCoin <= 0) {
-            return res.status(400).json({
-                success: false,
-                message: "INVALID_AMOUNT"
-            });
+        // 1. Validation เบื้องต้น
+        if (!userId || !requestCoin || requestCoin <= 0) {
+            return res.status(400).json({ success: false, message: "ข้อมูลไม่ครบถ้วนหรือจำนวนเงินไม่ถูกต้อง" });
         }
 
         if (requestCoin < CHASER_MIN_COIN) {
-            return res.status(400).json({
-                success: false,
-                message: `ขั้นต่ำในการแลกคือ ${CHASER_MIN_COIN} Coins`
-            });
+            return res.status(400).json({ success: false, message: `ขั้นต่ำในการแลกคือ ${CHASER_MIN_COIN} Coins` });
         }
 
+        // 2. ดึงข้อมูลจาก DB (เหมือนชุด Sell) เพื่อป้องกันการแก้ตัวเลขหน้าเว็บ
         const userRef = db.collection("users").doc(userId);
         const userDoc = await userRef.get();
-        if (!userDoc.exists) throw new Error("USER_NOT_FOUND");
+
+        if (!userDoc.exists) throw new Error("ไม่พบข้อมูลผู้เล่น");
 
         const userData = userDoc.data();
-        const userWallet = userData.walletAddress;
         const currentBalance = Number(userData.coin) || 0;
+        const userWallet = userData.walletAddress;
 
-        if (!userWallet) throw new Error("WALLET_NOT_LINKED");
-        if (currentBalance < requestCoin) throw new Error("INSUFFICIENT_COINS");
+        // 3. ตรวจสอบความพร้อมของผู้เล่น
+        if (!userWallet) throw new Error("ยังไม่ได้ผูกกระเป๋าเงิน");
+        if (currentBalance < requestCoin) throw new Error("ยอดเหรียญในเกมไม่เพียงพอ");
 
+        // 4. จัดเตรียมข้อมูลสำหรับ Blockchain
         const cleanUserWallet = ethers.getAddress(userWallet);
         const cleanTokenAddr = ethers.getAddress(process.env.CHASER_TOKEN_ADDRESS);
         const cleanVaultAddr = ethers.getAddress(process.env.CHASER_VAULT_ADDRESS);
 
-        // 🎯 FIXED RATE: 1 Coin = 1 Token
-        const amountWei = ethers.parseUnits(String(requestCoin), 18);
+        // คำนวณยอด Token ตามเรท 10.2 (1 Coin = 10.2 Tokens)
+        const rate = 10.2;
+        const totalAmountTokens = requestCoin * rate;
+        // แปลงเป็น Wei (18 หลัก) โดยปัดเศษทศนิยมที่เกิน 4 ตำแหน่งออกก่อนเพื่อความปลอดภัย
+        const amountWei = ethers.parseUnits(totalAmountTokens.toFixed(4), 18);
 
-        const nonce = Date.now();
-        const deadline = Math.floor(Date.now() / 1000) + 1200;
+        const nonce = Date.now(); // ใช้ Timestamp เป็น Nonce
+        const deadline = Math.floor(Date.now() / 1000) + 1200; // ลายเซ็นหมดอายุใน 20 นาที
 
+        // 5. การมัดรวมข้อมูล (Packing) ให้ตรงกับ abi.encode ใน Smart Contract
+        // ลำดับ: msg.sender, tokenAddress, amount, nonce, deadline, address(this)
         const abiCoder = ethers.AbiCoder.defaultAbiCoder();
-
         const messageHash = ethers.keccak256(
             abiCoder.encode(
                 ["address", "address", "uint256", "uint256", "uint256", "address"],
@@ -620,10 +624,10 @@ app.post("/api/get-chaser-signature", async (req, res) => {
             )
         );
 
-        const signature = await signer.signMessage(
-            ethers.getBytes(messageHash)
-        );
+        // 6. สร้างลายเซ็นดิจิทัล (Signature)
+        const signature = await signer.signMessage(ethers.getBytes(messageHash));
 
+        // 7. ส่งข้อมูลกลับไปให้หน้าบ้าน (Frontend)
         res.json({
             success: true,
             claimData: {
@@ -631,7 +635,8 @@ app.post("/api/get-chaser-signature", async (req, res) => {
                 amount: amountWei.toString(),
                 nonce: nonce.toString(),
                 deadline: deadline.toString(),
-                signature: signature
+                signature: signature,
+                vaultAddress: cleanVaultAddr
             }
         });
 
@@ -640,41 +645,58 @@ app.post("/api/get-chaser-signature", async (req, res) => {
         res.status(400).json({ success: false, message: error.message });
     }
 });
-   
-   app.post("/api/chaser-success", async (req, res) => {
+
+app.post("/api/chaser-success", async (req, res) => {
     try {
         const { userId, amountCoin, nonce, txHash } = req.body;
-        const requestCoin = Number(amountCoin);
         
+        // 1. ตรวจสอบข้อมูลพื้นฐาน
+        if (!userId || !amountCoin || !nonce) {
+            return res.status(400).json({ success: false, message: "MISSING_DATA" });
+        }
+
+        const requestCoin = Number(amountCoin);
         const userRef = db.collection("users").doc(userId);
+        
+        // ใช้ nonce เป็น ID เพื่อป้องกันการหักเงินซ้ำจากคำสั่งเดิม (Idempotency)
         const txLogRef = db.collection("transactions").doc(String(nonce));
 
         const result = await db.runTransaction(async (t) => {
-            // A. ตรวจสอบการทำซ้ำ (Nonce Check)
+            // A. ตรวจสอบว่า Nonce นี้เคยถูกใช้หักเงินไปหรือยัง
             const txDoc = await t.get(txLogRef);
-            if (txDoc.exists) throw new Error("ALREADY_PROCESSED");
+            if (txDoc.exists) {
+                // ถ้าเคยหักไปแล้วให้ตีกลับ แต่ถ้าสถานะสำเร็จอยู่แล้วอาจจะคืนค่า balance ปัจจุบันไปเลย
+                throw new Error("ALREADY_PROCESSED");
+            }
 
-            // B. ตรวจสอบยอดเงินจริง ณ วินาทีที่หัก
+            // B. ดึงข้อมูลผู้เล่นล่าสุดใน Transaction
             const userDoc = await t.get(userRef);
             if (!userDoc.exists) throw new Error("USER_NOT_FOUND");
             
-            const currentBalance = Number(userDoc.data().coin) || 0;
-            if (currentBalance < requestCoin) throw new Error("INSUFFICIENT_FUNDS_AT_SYNC");
+            const userData = userDoc.data();
+            const currentBalance = Number(userData.coin) || 0;
 
-            // C. หักเหรียญ
+            // C. ตรวจสอบยอดเงินอีกครั้ง (กันพลาด)
+            if (currentBalance < requestCoin) {
+                throw new Error("INSUFFICIENT_FUNDS_AT_SYNC");
+            }
+
+            // D. คำนวณยอดใหม่
             const updatedBalance = currentBalance - requestCoin;
+
+            // E. อัปเดตยอดเงิน
             t.update(userRef, { 
                 coin: updatedBalance,
                 lastUpdate: admin.firestore.FieldValue.serverTimestamp()
             });
 
-            // D. บันทึก Transaction Log แบบละเอียด
+            // F. บันทึกหลักฐานการหักเงิน
             t.set(txLogRef, {
                 userId,
                 type: "CHASER_SWAP",
                 amountCoin: requestCoin,
                 nonce: String(nonce),
-                blockchainTx: txHash || "MANUAL_CHECK_REQUIRED",
+                blockchainTx: txHash || "NOT_PROVIDED", // ควรมี txHash เพื่อใช้อ้างอิงตรวจสอบภายหลัง
                 status: "COMPLETED",
                 timestamp: admin.firestore.FieldValue.serverTimestamp()
             });
@@ -682,13 +704,23 @@ app.post("/api/get-chaser-signature", async (req, res) => {
             return updatedBalance;
         });
 
-        res.json({ success: true, newBalance: result });
+        res.json({ 
+            success: true, 
+            message: "หักเหรียญสำเร็จ",
+            newBalance: result 
+        });
+
     } catch (error) {
         console.error("❌ Success Sync Error:", error.message);
+        
+        // ถ้าเป็นเคสที่หักไปแล้ว ไม่ต้องตกใจ ส่งผลสำเร็จกลับไปได้เลยเพื่อให้หน้าบ้านหยุดทำงาน
+        if (error.message === "ALREADY_PROCESSED") {
+            return res.status(200).json({ success: true, message: "บันทึกเรียบร้อยแล้ว" });
+        }
+
         res.status(400).json({ success: false, message: error.message });
     }
 });
-
 
 
 const PORT = process.env.PORT || 3000;
