@@ -605,9 +605,11 @@ app.post("/api/get-chaser-signature", async (req, res) => {
         const cleanTokenAddr = ethers.getAddress(process.env.CHASER_TOKEN_ADDRESS);
         const cleanVaultAddr = ethers.getAddress(process.env.CHASER_VAULT_ADDRESS);
         
-        // คำนวณแบบเดิมที่คุณมั่นใจ (toFixed(4) กันเลขเพี้ยน)
-        const totalTokens = Math.round((requestCoin * CHASER_RATE) * 100) / 100;
-        const amountWei = ethers.parseUnits(totalTokens.toFixed(4), 18);
+        // 1. คำนวณให้เหมือนหน้าบ้านเป๊ะ (2 ตำแหน่ง)
+const totalTokens = Math.round((requestCoin * CHASER_RATE) * 100) / 100;
+
+// 2. ใช้ toFixed(2) ให้ตรงกับที่ปัดเศษด้านบน เพื่อความแน่นอน
+const amountWei = ethers.parseUnits(totalTokens.toFixed(2), 18);
         
         const nonce = Date.now();
         const deadline = Math.floor(Date.now() / 1000) + 1200;
