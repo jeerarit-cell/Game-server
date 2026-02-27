@@ -582,54 +582,55 @@ console.log(`- Min Coin: ${CHASER_MIN_COIN}`);
 console.log(`- Rate: ${CHASER_RATE}`);
 console.log(`- Signer Address: ${signer.address}`);
 
-// ==========================================
-// 3. API: GET SIGNATURE
-// ==========================================
-// [จุดแก้ไขสำคัญ] การคำนวณที่แม่นยำและไม่ประกาศตัวแปรซ้ำ
+
 app.post("/api/get-chaser-signature", async (req, res) => {
     try {
         const { userId, amountCoin } = req.body;
         const requestCoin = Number(amountCoin);
 
-        // 1. Validation
+        // 1. Validation (เหมือนเดิมเป๊ะ)
         if (!userId || !requestCoin || requestCoin < CHASER_MIN_COIN) {
             throw new Error(`ขั้นต่ำคือ ${CHASER_MIN_COIN} Coins`);
         }
 
-        // 2. ดึงข้อมูลผู้เล่น
         const userDoc = await db.collection("users").doc(userId).get();
         if (!userDoc.exists) throw new Error("ไม่พบผู้เล่น");
         const { walletAddress, coin } = userDoc.data();
-        
+
         if (!walletAddress) throw new Error("กรุณาผูกกระเป๋าก่อน");
         if ((Number(coin) || 0) < requestCoin) throw new Error("ยอดเงินไม่พอ");
 
-        // 3. เตรียมข้อมูล (ใช้ตัวแปรจาก .env ทั้งหมด)
+        // 2. เตรียมข้อมูล (คงชื่อตัวแปรเดิมของคุณไว้)
         const cleanUserWallet = ethers.getAddress(walletAddress);
         const cleanTokenAddr = ethers.getAddress(process.env.CHASER_TOKEN_ADDRESS);
         const cleanVaultAddr = ethers.getAddress(process.env.CHASER_VAULT_ADDRESS);
-
-        // --- Logic การคำนวณกันเลขเพี้ยน ---
-        // ใช้ Math.round เพื่อปัดเศษให้ใกล้เคียงที่สุด และเก็บทศนิยม 2 ตำแหน่งไว้
+        
+        // คำนวณแบบเดิมที่คุณมั่นใจ (toFixed(4) กันเลขเพี้ยน)
         const totalTokens = Math.round((requestCoin * CHASER_RATE) * 100) / 100;
-        // แปลงเป็น Wei โดยบังคับ String ให้สะอาดด้วย .toFixed(4)
         const amountWei = ethers.parseUnits(totalTokens.toFixed(4), 18);
-        // -------------------------------
-
+        
         const nonce = Date.now();
-        const deadline = Math.floor(Date.now() / 1000) + 1200; // 20 นาที
+        const deadline = Math.floor(Date.now() / 1000) + 1200;
 
-        // 4. สร้าง Signature (Packing ตรงตาม Contract)
+        // 3. สร้าง Signature (ปรับลำดับให้ตรงกับ Smart Contract V2)
         const abiCoder = ethers.AbiCoder.defaultAbiCoder();
         const messageHash = ethers.keccak256(
             abiCoder.encode(
-                ["address", "address", "uint256", "uint256", "uint256", "address"],
-                [cleanUserWallet, cleanTokenAddr, amountWei, nonce, deadline, cleanVaultAddr]
+                ["uint256", "address", "address", "address", "uint256", "uint256", "uint256"],
+                [
+                    Number(process.env.CHAIN_ID), // ใส่ Chain ID เพิ่มเข้าไป
+                    cleanVaultAddr,               // address(this)
+                    cleanUserWallet,              // user
+                    cleanTokenAddr,               // token
+                    amountWei,                    // amount
+                    nonce,                        // nonce
+                    deadline                      // deadline
+                ]
             )
         );
         const signature = await signer.signMessage(ethers.getBytes(messageHash));
 
-        // 5. บันทึก PENDING ลง DB
+        // 4. บันทึก PENDING (เหมือนเดิม)
         await db.collection("transactions").doc(String(nonce)).set({
             userId,
             amountCoin: requestCoin,
@@ -638,22 +639,22 @@ app.post("/api/get-chaser-signature", async (req, res) => {
             timestamp: admin.firestore.FieldValue.serverTimestamp()
         });
 
+        // 5. ส่งกลับ (เพิ่ม user เข้าไปใน claimData เพื่อให้ World App เรียกใช้ได้ง่าย)
         res.json({
             success: true,
             claimData: {
+                user: cleanUserWallet,      // <--- เพิ่มตัวนี้
                 tokenAddress: cleanTokenAddr,
                 amount: amountWei.toString(),
                 nonce: nonce.toString(),
                 deadline: deadline.toString(),
-                signature: signature,
-                vaultAddress: cleanVaultAddr
+                signature: signature
             }
         });
     } catch (error) {
         res.status(400).json({ success: false, message: error.message });
     }
 });
-
 
 // ==========================================
 // 4. API: SUCCESS CALLBACK
