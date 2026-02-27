@@ -611,7 +611,16 @@ app.post("/api/get-chaser-signature", async (req, res) => {
         const cleanTokenAddr = ethers.getAddress(process.env.CHASER_TOKEN_ADDRESS);
         const cleanVaultAddr = ethers.getAddress(process.env.CHASER_VAULT_ADDRESS);
 
-        const totalTokens = requestCoin * CHASER_RATE;
+        // --- ส่วนการคำนวณใหม่ที่กันเลขเพี้ยน ---
+const rate = 10.2;
+// ใช้ Math.round เพื่อดึงค่าให้เข้าใกล้จำนวนเต็มที่ถูกต้องที่สุดก่อน
+// โดยคูณ 100 แล้วหาร 100 เพื่อเก็บทศนิยม 2 ตำแหน่งไว้ (ถ้ามี)
+const totalTokens = Math.round((requestCoin * rate) * 100) / 100;
+
+// แปลงเป็น Wei โดยระบุทศนิยม 4 ตำแหน่งให้คงที่ ป้องกัน parseUnits อ่านค่าผิด
+const amountWei = ethers.parseUnits(totalTokens.toFixed(4), 18);
+// ------------------------------------
+
         const amountWei = ethers.parseUnits(totalTokens.toFixed(4), 18);
 
         const nonce = Date.now(); // ใช้เป็นเลข Transaction ID
