@@ -575,8 +575,6 @@ app.get("/ping", (req, res) => {
 const CHASER_MIN_COIN = Number(process.env.CHASER_MIN_COIN) || 100;
 const CHASER_RATE = Number(process.env.CHASER_RATE) || 10.2;
 
-const provider = new ethers.JsonRpcProvider(process.env.RPC_URL);
-const signer = new ethers.Wallet(process.env.SIGNER_PRIVATE_KEY, provider);
 
 // แสดง Log ตรวจสอบความพร้อม
 console.log("✅ Chaser System Ready");
