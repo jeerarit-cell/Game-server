@@ -612,11 +612,12 @@ app.post("/api/get-chaser-signature", async (req, res) => {
         if (!userWallet) throw new Error("WALLET_NOT_FOUND");
         if (currentBalance < requestCoin) throw new Error("INSUFFICIENT_FUNDS");
 
-        // 4. 🔥 คำนวณ Amount (Wei) แบบ BigInt (สูตร Chaser)
-        // สูตร: (Coin * 10^18) / Rate
-        // เทคนิค: คูณ 1000 เพื่อจัดการทศนิยมของ Rate (เช่น 10.2 -> 10200)
-        const rateScaled = BigInt(Math.round(CHASER_RATE * 1000)); 
-        const amountWei = (BigInt(requestCoin) * (10n ** 18n) * 1000n) / rateScaled;
+        // 🔥 เปลี่ยนสูตรจาก หาร เป็น คูณ เพื่อให้ Rate ทำหน้าที่เป็นตัวคูณ (Multiplier)
+const rateScaled = BigInt(Math.round(CHASER_RATE * 1000)); 
+const amountWei = (BigInt(requestCoin) * (10n ** 18n) * rateScaled) / 1000n;
+
+console.log(`Updated Calculation: ${requestCoin} Coins * ${CHASER_RATE} = ${ethers.formatEther(amountWei)} Tokens`);
+
 
         const nonce = Date.now(); // ใช้ Timestamp เป็น Nonce
 
