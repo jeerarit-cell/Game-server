@@ -639,7 +639,7 @@ app.post("/api/get-chaser-signature", async (req, res) => {
             amountTokenWei: amountWei.toString(),
             tokenAddress: cleanTokenAddr,
             status: "PENDING",
-            timestamp: admin.FieldValue.serverTimestamp()
+            timestamp: admin.firestore.FieldValue.serverTimestamp()
         });
 
         // 5. ส่งกลับไปหน้าบ้าน (จัดรูปให้ MiniKit ใช้งานง่าย)
