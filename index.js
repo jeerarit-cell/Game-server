@@ -635,11 +635,10 @@ app.post("/api/get-chaser-signature", async (req, res) => {
         res.json({
             success: true,
             claimData: {
-                user: cleanUserWallet,
+                
                 tokenAddress: cleanTokenAddr,
                 amount: amountWei.toString(),
-                nonce: nonce.toString(),
-                deadline: deadline.toString(), // ส่งไปเผื่อหน้าบ้านเรียกใช้
+                nonce: nonce.toString(),               
                 signature: signature,
                 vaultAddress: cleanVaultAddr
             }
