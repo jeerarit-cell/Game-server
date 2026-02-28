@@ -623,13 +623,13 @@ app.post("/api/get-chaser-signature", async (req, res) => {
         // 5. สร้าง Hash สำหรับเซ็น (Structure ต้องตรงกับ Smart Contract)
         // รูปแบบ: msg.sender, token, amount, nonce, contractAddress
         const packedData = ethers.solidityPackedKeccak256(
-            ["address", "address", "uint256", "uint256", "address"],
+            ["address", "address", "uint256", "uint256"],
             [
                 userWallet,         // คนกดเคลม
                 CHASER_TOKEN_ADDR,  // เหรียญที่จะได้
                 amountWei,          // จำนวนที่จะได้ (Wei)
-                nonce,              // กันซ้ำ
-                CHASER_VAULT_ADDR   // คนจ่าย (Contract)
+                nonce           // กันซ้ำ
+                 
             ]
         );
 
