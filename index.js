@@ -613,7 +613,7 @@ app.post("/api/get-chaser-signature", async (req, res) => {
 
         const nonce = Date.now();
         // deadline (ถ้าสัญญา V.1 ของคุณไม่มีการเช็ค deadline ให้ตัดออกได้ แต่ถ้าใส่ไว้ก็ไม่เสียหายครับ)
-        const deadline = Math.floor(Date.now() / 1000) + 3600;
+        const deadline = Math.floor(Date.now() / 1000) + 1200;
 
         // 🔥 [จุดแก้ไขสำคัญ] เปลี่ยนจาก AbiCoder มาใช้ solidityPackedKeccak256
         // เพื่อให้ตรงกับ abi.encodePacked ใน Smart Contract V.1 (Generic)
@@ -630,17 +630,6 @@ app.post("/api/get-chaser-signature", async (req, res) => {
 
         // เซ็นลายเซ็น (ethers จะเติม Prefix \x19... ให้เองตามที่สัญญาต้องการ)
         const signature = await signer.signMessage(ethers.getBytes(packedData));
-
-        // 4. บันทึก PENDING ลง Database
-        await db.collection("transactions").doc(String(nonce)).set({
-            userId,
-            type: "CHASER_SWAP",
-            amountCoin: requestCoin,
-            amountTokenWei: amountWei.toString(),
-            tokenAddress: cleanTokenAddr,
-            status: "PENDING",
-            timestamp: admin.firestore.FieldValue.serverTimestamp()
-        });
 
         // 5. ส่งกลับไปหน้าบ้าน (จัดรูปให้ MiniKit ใช้งานง่าย)
         res.json({
@@ -666,74 +655,44 @@ app.post("/api/get-chaser-signature", async (req, res) => {
 // 4. API: CHASER SUCCESS (หักเงินจาก DB หลังยืนยันบน Chain)
 // ==========================================
 app.post("/api/chaser-success", async (req, res) => {
-    console.log("---- SYNCING CHASER SUCCESS ----");
-    try {
-        const { userId, nonce, txHash } = req.body;
+  try {
+    const { userId, nonce, amountCoin } = req.body; // รับ amountCoin กลับมาด้วยเหมือนระบบ Sell
+    
+    const userRef = db.collection("users").doc(userId);
+    const txRef = db.collection("transactions").doc(String(nonce)); // ใช้ nonce เป็น ID เหมือนเดิม
 
-        if (!userId || !nonce) {
-            return res.status(400).json({ success: false, message: "ข้อมูลไม่ครบถ้วน" });
-        }
+    const newBalance = await db.runTransaction(async (t) => {
+      // 1. เช็คว่า Nonce นี้ "เคยหักเงินไปแล้วหรือยัง" (Idempotency)
+      const txDoc = await t.get(txRef);
+      if (txDoc.exists) throw new Error("ALREADY_PROCESSED");
 
-        const txLogRef = db.collection("transactions").doc(String(nonce));
-        const userRef = db.collection("users").doc(userId);
+      const userDoc = await t.get(userRef);
+      if (!userDoc.exists) throw new Error("USER_NOT_FOUND");
 
-        // ใช้ Transaction ของ Firestore เพื่อความปลอดภัยสูงสุด (Atomicity)
-        const finalBalance = await db.runTransaction(async (t) => {
-            const txDoc = await t.get(txLogRef);
-            
-            // 1. ตรวจสอบว่ามีรายการ PENDING นี้อยู่จริงไหม
-            if (!txDoc.exists) throw new Error("TRANSACTION_NOT_FOUND");
+      const currentBalance = Number(userDoc.data().coin) || 0;
+      if (currentBalance < amountCoin) throw new Error("INSUFFICIENT_FUNDS");
 
-            const txData = txDoc.data();
-            
-            // 2. ป้องกันการหักเงินซ้ำ (Idempotency)
-            if (txData.status === "COMPLETED") return "ALREADY_PROCESSED";
-            if (txData.userId !== userId) throw new Error("USER_MISMATCH");
+      const updatedBalance = currentBalance - amountCoin;
 
-            const amountToDeduct = Number(txData.amountCoin);
+      // 2. หักเงินใน User
+      t.update(userRef, { coin: updatedBalance });
 
-            // 3. เช็คยอดเงินปัจจุบันอีกครั้ง
-            const userDoc = await t.get(userRef);
-            if (!userDoc.exists) throw new Error("USER_NOT_FOUND");
+      // 3. บันทึกประวัติลง transactions (สร้างขึ้นมาตอนสำเร็จนี่แหละ)
+      t.set(txRef, {
+        userId: userId,
+        type: "CHASER_SWAP",
+        amountCoin: amountCoin,
+        timestamp: admin.firestore.FieldValue.serverTimestamp() // อย่าลืมใส่ .firestore ด้วยนะครับ
+      });
 
-            const currentBalance = Number(userDoc.data().coin) || 0;
-            if (currentBalance < amountToDeduct) throw new Error("INSUFFICIENT_COINS");
+      return updatedBalance;
+    });
 
-            const updatedBalance = currentBalance - amountToDeduct;
-
-            // 4. อัปเดตยอดเงิน และ สถานะรายการ
-            t.update(userRef, { 
-                coin: updatedBalance,
-                lastSwapAt: admin.firestore.FieldValue.serverTimestamp() 
-            });
-
-            t.update(txLogRef, { 
-                status: "COMPLETED",
-                blockchainTx: txHash || "N/A", // เก็บ TX Hash ไว้ตรวจสอบ
-                completedAt: admin.firestore.FieldValue.serverTimestamp()
-            });
-
-            return updatedBalance;
-        });
-
-        if (finalBalance === "ALREADY_PROCESSED") {
-            return res.json({ success: true, message: "รายการนี้ดำเนินการไปแล้ว" });
-        }
-
-        console.log(`✅ [Chaser Success] User: ${userId} | Deducted: ${nonce} | New Balance: ${finalBalance}`);
-        
-        res.json({ 
-            success: true, 
-            newBalance: finalBalance,
-            message: "บันทึกรายการสำเร็จ" 
-        });
-
-    } catch (error) {
-        console.error("❌ Chaser Sync Error:", error.message);
-        res.status(400).json({ success: false, message: error.message });
-    }
+    res.json({ success: true, newBalance: newBalance });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message });
+  }
 });
-
 
 
 const PORT = process.env.PORT || 3000;
