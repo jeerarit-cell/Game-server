@@ -588,10 +588,11 @@ console.log(`- Signer Address: ${signer.address}`);
 app.post("/api/get-chaser-signature", async (req, res) => {
     try {
         const { userId, amountCoin } = req.body;
-        const requestCoin = Number(amountCoin);
+        const requestCoin = BigInt(amountCoin); // ใช้ BigInt รับค่าจากหน้าบ้านเลย
 
-        // 1. Validation
-        if (!userId || !requestCoin || requestCoin < CHASER_MIN_COIN) {
+        // 1. Validation (ใช้ BigInt เทียบค่า)
+        const minCoin = BigInt(CHASER_MIN_COIN);
+        if (!userId || requestCoin < minCoin) {
             throw new Error(`ขั้นต่ำคือ ${CHASER_MIN_COIN} Coins`);
         }
 
@@ -600,43 +601,45 @@ app.post("/api/get-chaser-signature", async (req, res) => {
         const { walletAddress, coin } = userDoc.data();
 
         if (!walletAddress) throw new Error("กรุณาผูกกระเป๋าก่อน");
-        if ((Number(coin) || 0) < requestCoin) throw new Error("ยอดเงินไม่พอ");
+        
+        const userCoin = BigInt(Math.floor(Number(coin) || 0)); // ป้องกันเศษจาก DB
+        if (userCoin < requestCoin) throw new Error("ยอดเงินไม่พอ");
 
-        // 2. จัดเตรียม Address (ล้างค่าให้สะอาด)
+        // 2. จัดเตรียม Address
         const cleanUserWallet = ethers.getAddress(walletAddress);
         const cleanTokenAddr = ethers.getAddress(process.env.CHASER_TOKEN_ADDRESS);
         const cleanVaultAddr = ethers.getAddress(process.env.CHASER_VAULT_ADDRESS);
 
-        // 3. คำนวณ Amount (2 ตำแหน่งเป๊ะๆ ตามหน้าบ้าน)
-        const totalTokens = Math.round((requestCoin * CHASER_RATE) * 100) / 100;
-        const amountWei = ethers.parseUnits(totalTokens.toFixed(2), 18);
+        // 3. 🔥 คำนวณแบบ BigInt (ตัดปัญหาทศนิยมทิ้ง 100%)
+        // สูตร: (จำนวน Coin * 10^18) / RATE (ถ้า RATE เป็นจำนวนเต็ม)
+        // ถ้า CHASER_RATE เป็นทศนิยม เช่น 10.2 ให้คูณ 10 ทั้งบนและล่าง เพื่อกำจัดจุดออก
+        const rateScaled = BigInt(Math.round(CHASER_RATE * 10)); // 10.2 -> 102n
+        const amountWei = (requestCoin * (10n ** 18n) * 10n) / rateScaled;
 
-        const nonce = Date.now();
+        const nonce = Date.now(); // เลข nonce สำหรับกันใช้ซ้ำ
 
-        // 🔥 [จุดแก้ไขสำคัญ] เปลี่ยนจาก AbiCoder มาใช้ solidityPackedKeccak256
-        // เพื่อให้ตรงกับ abi.encodePacked ใน Smart Contract V.1 (Generic)
+        // 4. สร้าง Hash (ลำดับ 5 ตัวตามสัญญา V2)
         const packedData = ethers.solidityPackedKeccak256(
             ["address", "address", "uint256", "uint256", "address"],
             [
-                cleanUserWallet,   // msg.sender (ผู้รับ)
-                cleanTokenAddr,    // _token
-                amountWei,         // _amount
-                nonce,             // _nonce
-                cleanVaultAddr     // address(this) (คลัง)
+                cleanUserWallet,   // 1. msg.sender
+                cleanTokenAddr,    // 2. _token
+                amountWei,         // 3. _amount (BigInt)
+                nonce,             // 4. _nonce
+                cleanVaultAddr     // 5. address(this)
             ]
         );
 
-        // เซ็นลายเซ็น (ethers จะเติม Prefix \x19... ให้เองตามที่สัญญาต้องการ)
+        // เซ็นลายเซ็น
         const chasersignature = await signer.signMessage(ethers.getBytes(packedData));
 
-        // 5. ส่งกลับไปหน้าบ้าน (จัดรูปให้ MiniKit ใช้งานง่าย)
+        // 5. ส่งกลับไปหน้าบ้าน
         res.json({
             success: true,
             claimData: {
-                
                 tokenAddress: cleanTokenAddr,
-                amount: amountWei.toString(),
-                nonce: nonce,               
+                amount:               amountWei.toString(),
+                nonce: nonce,
                 signature: chasersignature,
                 vaultAddress: cleanVaultAddr
             }
