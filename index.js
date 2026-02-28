@@ -596,17 +596,23 @@ app.post("/api/get-chaser-signature", async (req, res) => {
             throw new Error(`ขั้นต่ำคือ ${CHASER_MIN_COIN} Coins`);
         }
 
-        const userDoc = await db.collection("users").doc(userId).get();
+            const userRef = db.collection("users").doc(userId);
+    const doc = await userRef.get(); 
+
+    if (!doc.exists) throw new Error("USER_NOT_FOUND");
+
+    const userData = doc.data();
+    const userWallet = userData.walletAddress;
+    const currentBalance = Number(userData.coin) || 0;
         if (!userDoc.exists) throw new Error("ไม่พบผู้เล่น");
         const { walletAddress, coin } = userDoc.data();
 
         if (!walletAddress) throw new Error("กรุณาผูกกระเป๋าก่อน");
-        
-        const userCoin = BigInt(Math.floor(Number(coin) || 0)); // ป้องกันเศษจาก DB
+                
         if (userCoin < requestCoin) throw new Error("ยอดเงินไม่พอ");
 
         // 2. จัดเตรียม Address
-        const cleanUserWallet = ethers.getAddress(walletAddress);
+        
         const cleanTokenAddr = ethers.getAddress(process.env.CHASER_TOKEN_ADDRESS);
         const cleanVaultAddr = ethers.getAddress(process.env.CHASER_VAULT_ADDRESS);
 
@@ -622,7 +628,7 @@ app.post("/api/get-chaser-signature", async (req, res) => {
         const packedData = ethers.solidityPackedKeccak256(
             ["address", "address", "uint256", "uint256", "address"],
             [
-                cleanUserWallet,   // 1. msg.sender
+                userWallet,   // 1. msg.sender
                 cleanTokenAddr,    // 2. _token
                 amountWei,         // 3. _amount (BigInt)
                 nonce,             // 4. _nonce
