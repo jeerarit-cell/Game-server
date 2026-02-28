@@ -612,8 +612,6 @@ app.post("/api/get-chaser-signature", async (req, res) => {
         const amountWei = ethers.parseUnits(totalTokens.toFixed(2), 18);
 
         const nonce = Date.now();
-        // deadline (ถ้าสัญญา V.1 ของคุณไม่มีการเช็ค deadline ให้ตัดออกได้ แต่ถ้าใส่ไว้ก็ไม่เสียหายครับ)
-        const deadline = Math.floor(Date.now() / 1000) + 1200;
 
         // 🔥 [จุดแก้ไขสำคัญ] เปลี่ยนจาก AbiCoder มาใช้ solidityPackedKeccak256
         // เพื่อให้ตรงกับ abi.encodePacked ใน Smart Contract V.1 (Generic)
@@ -629,7 +627,7 @@ app.post("/api/get-chaser-signature", async (req, res) => {
         );
 
         // เซ็นลายเซ็น (ethers จะเติม Prefix \x19... ให้เองตามที่สัญญาต้องการ)
-        const signature = await signer.signMessage(ethers.getBytes(packedData));
+        const chasersignature = await signer.signMessage(ethers.getBytes(packedData));
 
         // 5. ส่งกลับไปหน้าบ้าน (จัดรูปให้ MiniKit ใช้งานง่าย)
         res.json({
@@ -639,7 +637,7 @@ app.post("/api/get-chaser-signature", async (req, res) => {
                 tokenAddress: cleanTokenAddr,
                 amount: amountWei.toString(),
                 nonce: nonce.toString(),               
-                signature: signature,
+                signature: chasersignature,
                 vaultAddress: cleanVaultAddr
             }
         });
