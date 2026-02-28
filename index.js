@@ -17,7 +17,7 @@ try {
   if (!process.env.FIREBASE_KEY) throw new Error("Missing FIREBASE_KEY");
   serviceAccount = JSON.parse(process.env.FIREBASE_KEY);
 } catch (error) {
-  console.error("❌ FIREBASE INIT ERROR: ตรวจสอบ FIREBASE_KEY\n", error.message);
+  console.error("❌ FIREBASE INIT ERROR: FIREBASE_KEY\n", error.message);
   process.exit(1);
 }
 
@@ -35,7 +35,7 @@ const VAULT_ADDRESS = process.env.CONTRACT_ADDRESS;
 const SELL_RATE = Number(process.env.SELL_RATE_COIN_PER_WLD) || 1100;
 
 if (!PRIVATE_KEY || !VAULT_ADDRESS) {
-  console.error("❌ MISSING CONFIG: ตรวจสอบ SIGNER_PRIVATE_KEY หรือ CONTRACT_ADDRESS");
+  console.error("❌ MISSING CONFIG: check SIGNER_PRIVATE_KEY หรือ CONTRACT_ADDRESS");
   process.exit(1);
 }
 
@@ -86,7 +86,7 @@ app.post("/api/get-player", async (req, res) => {
 app.post("/api/register", async (req, res) => {
   try {
     const { userId, wallet, name } = req.body;
-    if (!userId || !wallet || !name) return res.status(400).json({ success: false, message: "ข้อมูลไม่ครบถ้วน" });
+    if (!userId || !wallet || !name) return res.status(400).json({ success: false, message: "data not found" });
 
     const userRef = db.collection("users").doc(userId);
 
@@ -108,10 +108,10 @@ app.post("/api/register", async (req, res) => {
       }, { merge: true });
     });
 
-    res.json({ success: true, message: "ลงทะเบียนผู้เล่นใหม่สำเร็จ" });
+    res.json({ success: true, message: "Register success" });
   } catch (error) {
     console.error("Register Error:", error);
-    res.status(400).json({ success: false, message: error.message === "USER_ALREADY_REGISTERED" ? "ไอดีนี้ลงทะเบียนไปแล้ว" : "เกิดข้อผิดพลาด" });
+    res.status(400).json({ success: false, message: error.message === "USER_ALREADY_REGISTERED" ? "Register Error" : "error" });
   }
 });
 
@@ -121,7 +121,7 @@ app.post("/api/register", async (req, res) => {
 app.post("/api/buy-coins", async (req, res) => {
   try {
     const { userId, amountBought, reference } = req.body;
-    if (!userId || !amountBought || !reference) return res.status(400).json({ success: false, message: "ข้อมูลไม่ครบถ้วน" });
+    if (!userId || !amountBought || !reference) return res.status(400).json({ success: false, message: "data not found" });
 
     const userRef = db.collection("users").doc(userId);
     // 📌 สร้าง/อ้างอิง สมุดบัญชีโดยใช้ "เลขที่ใบเสร็จ (reference)" เป็นชื่อไฟล์
@@ -159,7 +159,7 @@ app.post("/api/buy-coins", async (req, res) => {
     console.error("Buy Coins Error:", error);
     res.status(400).json({ 
       success: false, 
-      message: error.message === "REFERENCE_ALREADY_USED" ? "ใบเสร็จนี้ถูกใช้งานเติมเงินไปแล้ว" : "เกิดข้อผิดพลาดในการอัปเดตเหรียญ" 
+      message: error.message === "REFERENCE_ALREADY_USED" 
     });
   }
 });
@@ -169,10 +169,10 @@ app.post("/api/buy-coins", async (req, res) => {
 app.post("/api/battle-start", async (req, res) => {
   try {
     const { userId, monsterId } = req.body;
-    if (!userId || !monsterId) return res.status(400).json({ success: false, message: "ข้อมูลไม่ครบถ้วน" });
+    if (!userId || !monsterId) return res.status(400).json({ success: false, message: "data not found" });
 
     const monster = monsterDB.find(m => m.id === monsterId);
-    if (!monster) return res.status(400).json({ success: false, message: "ไม่พบมอนสเตอร์" });
+    if (!monster) return res.status(400).json({ success: false, message: "monster no list" });
 
     const userRef = db.collection("users").doc(userId);
 
@@ -205,7 +205,7 @@ app.post("/api/battle-start", async (req, res) => {
     res.json({ success: true, newBalance: newBalance });
   } catch (error) {
     console.error("Battle Start Error:", error);
-    res.status(400).json({ success: false, message: error.message === "INSUFFICIENT_COIN" ? "เงิน COIN ไม่พอ" : "เกิดข้อผิดพลาด" });
+    res.status(400).json({ success: false, message: error.message === "INSUFFICIENT_COIN" ? " No COIN" : "Error" });
   }
 });
 
@@ -218,12 +218,12 @@ app.post("/api/battle-action", async (req, res) => {
 
     // 🛡️ [จุดที่แก้ไข - ดักแฮกเกอร์ 1] เช็คว่าส่งไพ่มาครบ 5 ใบ และต้องเป็นเลข 1, 2, 3, 4, 5 เท่านั้น!
     if (!userId || !Array.isArray(playerDeck) || playerDeck.length !== 5) {
-        return res.status(400).json({ success: false, message: "ข้อมูลไพ่ไม่ถูกต้อง" });
+        return res.status(400).json({ success: false, message: "Error" });
     }
     const isValidDeck = [...playerDeck].sort((a,b) => a-b).join(',') === '1,2,3,4,5';
     if (!isValidDeck) {
         console.warn(`🚨 HACKER DETECTED! User: ${userId} ส่งไพ่โกง: [${playerDeck}]`);
-        return res.status(400).json({ success: false, message: "ตรวจพบการโกงไพ่!" });
+        return res.status(400).json({ success: false, message: "Error!" });
     }
 
     const userRef = db.collection("users").doc(userId);
@@ -398,10 +398,10 @@ app.post("/api/withdraw", async (req, res) => {
   console.log("---- SECURE WITHDRAW REQUEST ----");
   try {
     const { userId, amount } = req.body;
-    if (!userId || !amount) return res.status(400).json({ success: false, message: "ข้อมูลไม่ครบถ้วน" });
+    if (!userId || !amount) return res.status(400).json({ success: false, message: "Error" });
 
     const requestAmount = Number(amount);
-    if (requestAmount <= 0) return res.status(400).json({ success: false, message: "จำนวนเงินไม่ถูกต้อง" });
+    if (requestAmount <= 0) return res.status(400).json({ success: false, message: "Error" });
 
     const userRef = db.collection("users").doc(userId);
     const doc = await userRef.get(); 
@@ -432,10 +432,10 @@ app.post("/api/withdraw", async (req, res) => {
     });
   } catch (error) {
     console.error("❌ Withdraw Request Error:", error.message || error);
-    let clientMessage = "เกิดข้อผิดพลาดที่เซิร์ฟเวอร์";
-    if (error.message === "USER_NOT_FOUND") clientMessage = "ไม่พบข้อมูลผู้เล่น";
-    else if (error.message === "WALLET_NOT_FOUND") clientMessage = "ไม่พบกระเป๋าที่ผูกไว้";
-    else if (error.message === "INSUFFICIENT_FUNDS") clientMessage = "ยอด Coin ไม่เพียงพอ";
+    let clientMessage = "Server Error";
+    if (error.message === "USER_NOT_FOUND") clientMessage = "Error";
+    else if (error.message === "WALLET_NOT_FOUND") clientMessage = "Error";
+    else if (error.message === "INSUFFICIENT_FUNDS") clientMessage = "Error Coin";
     res.status(400).json({ success: false, message: clientMessage });
   }
 });
@@ -654,8 +654,8 @@ console.log(`Updated Calculation: ${requestCoin} Coins * ${CHASER_RATE} = ${ethe
     } catch (error) {
         console.error("❌ Chaser Sig Error:", error.message);
         let msg = "Server Error";
-        if (error.message === "INSUFFICIENT_FUNDS") msg = "ยอด Coin ไม่เพียงพอ";
-        if (error.message === "WALLET_NOT_FOUND") msg = "กรุณาผูกกระเป๋าก่อน";
+        if (error.message === "INSUFFICIENT_FUNDS") msg = " Coin ERROR";
+        if (error.message === "WALLET_NOT_FOUND") msg = "WALLET Error ";
         res.status(400).json({ success: false, message: msg });
     }
 });
