@@ -636,7 +636,7 @@ app.post("/api/get-chaser-signature", async (req, res) => {
                 
                 tokenAddress: cleanTokenAddr,
                 amount: amountWei.toString(),
-                nonce: nonce.toString(),               
+                nonce: nonce,               
                 signature: chasersignature,
                 vaultAddress: cleanVaultAddr
             }
