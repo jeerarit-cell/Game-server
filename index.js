@@ -704,7 +704,7 @@ app.post("/api/chaser-success", async (req, res) => {
             t.set(txRef, {
                 userId: userId,
                 type: "CHASER_SWAP", // แยก Type ให้ชัดเจน
-                amountCoin: deductAmount,
+                amountCoin: requestAmount,
                 txHash: txHash || "N/A",
                 timestamp: admin.firestore.FieldValue.serverTimestamp()
             });
