@@ -666,51 +666,45 @@ console.log(`Updated Calculation: ${requestCoin} Coins * ${CHASER_RATE} = ${ethe
 app.post("/api/chaser-success", async (req, res) => {
     console.log("---- 💰 CHASER SUCCESS SYNC ----");
     try {
-        const { userId, amountCoin, nonce, txHash } = req.body; // รับ txHash มาเก็บด้วยถ้ามี
+        const { userId, amount, nonce, txHash} = req.body;
+    if (!userId || !amount || !nonce) return res.status(400).json({ success: false });
 
-        if (!userId || !amountCoin || !nonce) 
-            return res.status(400).json({ success: false, message: "Missing Data" });
+    const requestAmount = Number(amount);
+    const userRef = db.collection("users").doc(userId);
+    // 📌 สร้าง/อ้างอิง สมุดบัญชีโดยใช้ "nonce" (รหัสธุรกรรมบนบล็อกเชน) เป็นชื่อไฟล์
+    const txRef = db.collection("transactions").doc(String(nonce));
 
-        const deductAmount = Number(amountCoin);
-        const userRef = db.collection("users").doc(userId);
-        
-        // 🔥 ใช้ Nonce เป็น ID ของ Transaction เพื่อป้องกันการยิงซ้ำ (Idempotency)
-        const txRef = db.collection("transactions").doc(String(nonce));
+    // หักเงินจริงด้วย Transaction
+    const newBalance = await db.runTransaction(async (t) => {
+      // 1. เช็คในสมุดบัญชีว่า Nonce นี้ถูกหักเงินไปหรือยัง? (ป้องกันโกง/เน็ตกระตุก)
+      const txDoc = await t.get(txRef);
+      if (txDoc.exists) throw new Error("ALREADY_DEDUCTED");
 
-        // เริ่ม Transaction ของ Firestore (ปลอดภัยที่สุด)
-        const newBalance = await db.runTransaction(async (t) => {
-            
-            // 1. เช็คว่า Nonce นี้ถูกใช้ไปแล้วหรือยัง?
-            const txDoc = await t.get(txRef);
-            if (txDoc.exists) throw new Error("ALREADY_PROCESSED");
+      const userDoc = await t.get(userRef);
+      if (!userDoc.exists) throw new Error("USER_NOT_FOUND");
 
-            // 2. ดึงข้อมูล User ล่าสุด
-            const userDoc = await t.get(userRef);
-            if (!userDoc.exists) throw new Error("USER_NOT_FOUND");
+      const realBalance = Number(userDoc.data().coin) || 0;
+      if (realBalance < requestAmount) throw new Error("INSUFFICIENT_FUNDS");
 
-            const currentBalance = Number(userDoc.data().coin) || 0;
-            if (currentBalance < deductAmount) throw new Error("INSUFFICIENT_FUNDS");
+      const updatedBalance = realBalance - requestAmount;
 
-            // 3. คำนวณยอดคงเหลือใหม่
-            const updatedBalance = currentBalance - deductAmount;
+      // 2. อัปเดตเงินในโปรไฟล์ (ไม่ต้องยัด array nonce ลงไปให้รกโปรไฟล์อีกแล้ว)
+      t.update(userRef, { 
+        coin: updatedBalance, 
+        lastWithdrawal: new Date().toISOString() 
+      });
 
-            // 4. อัปเดต User
-            t.update(userRef, { 
-                coin: updatedBalance,
-                lastActivity: new Date().toISOString()
-            });
+      // 3. บันทึกประวัติลงสมุดบัญชี
+      t.set(txRef, {
+        userId: userId,
+        type: "CHASER_SWAP",
+        amountCoin: requestAmount,
+        txHash: txHash || "N/A",
+        timestamp: admin.firestore.FieldValue.serverTimestamp()
+      });
 
-            // 5. บันทึกประวัติ Transaction
-            t.set(txRef, {
-                userId: userId,
-                type: "CHASER_SWAP", // แยก Type ให้ชัดเจน
-                amountCoin: requestAmount,
-                txHash: txHash || "N/A",
-                timestamp: admin.firestore.FieldValue.serverTimestamp()
-            });
-
-            return updatedBalance;
-        });
+      return updatedBalance; 
+    });
 
         console.log(`✅ [Swap Success] User: ${userId} | Deducted: ${deductAmount} | NewBal: ${newBalance}`);
         res.json({ success: true, newBalance: newBalance });
